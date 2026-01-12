@@ -1,0 +1,41 @@
+[project]
+name = "audiobook-optimizer"
+version = "0.1.0"
+description = "Audiobook processing: scan, validate metadata, convert to M4B, organize"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "pydantic-ai>=0.1",
+    "mutagen>=1.47",
+    "typer>=0.15",
+    "rich>=13.9",
+    "python-dotenv>=1.2.1",
+]
+
+[project.scripts]
+audiobook-optimizer = "audiobook_optimizer.cli:app"
+
+[tool.ruff]
+line-length = 129
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "PTH"]
+
+[tool.basedpyright]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/audiobook_optimizer"]
