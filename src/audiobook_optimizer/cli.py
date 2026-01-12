@@ -76,19 +76,38 @@ def scan(
 
     if verbose:
         # Detailed view with file info
+        from audiobook_optimizer.adapters.ffmpeg import FFmpegConverter
+        converter = FFmpegConverter()
+        target_bitrate = 64  # Default target
+
         for src in sources:
             processor._populate_file_info(src)
             src.metadata = processor.metadata_extractor.infer_metadata(src)
 
-            # Calculate average bitrate from files
+            # Calculate bitrate stats
             bitrates = [f.bitrate for f in src.audio_files if f.bitrate]
+            min_bitrate = min(bitrates) if bitrates else None
             avg_bitrate = sum(bitrates) // len(bitrates) if bitrates else None
+
+            # Determine what would happen on processing
+            can_remux, remux_reason = converter._can_remux(src.audio_files, mono=True)
+            if can_remux:
+                action = "[cyan]remux[/cyan] (no re-encoding)"
+                effective = "copy"
+            else:
+                effective_bitrate = converter._calculate_effective_bitrate(src.audio_files, target_bitrate)
+                if min_bitrate and effective_bitrate < target_bitrate:
+                    action = f"[yellow]transcode[/yellow] → {effective_bitrate}kbps (capped by source)"
+                else:
+                    action = f"[dim]transcode[/dim] → {effective_bitrate}kbps"
+                effective = f"{effective_bitrate}kbps"
 
             console.print(f"\n[bold cyan]{src.source_path.name}[/bold cyan]")
             console.print(f"  Files:    {src.file_count} × {src.primary_format.value.upper()}")
             console.print(f"  Size:     {format_size(src.total_size_bytes)}")
             console.print(f"  Duration: {format_duration(src.total_duration_ms)}")
-            console.print(f"  Bitrate:  {format_bitrate(avg_bitrate)}")
+            console.print(f"  Bitrate:  {format_bitrate(avg_bitrate)} (min: {format_bitrate(min_bitrate)})")
+            console.print(f"  Output:   {action}")
             if src.metadata:
                 console.print(f"  → Title:  {src.metadata.title}")
                 console.print(f"  → Author: {src.metadata.author}")
