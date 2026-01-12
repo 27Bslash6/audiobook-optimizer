@@ -1,13 +1,14 @@
 """CLI entry point for audiobook-optimizer."""
 
 from pathlib import Path
+from typing import Optional
 
 import typer
 from rich.console import Console
-from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
+from audiobook_optimizer.config import ai_available, get_settings
 from audiobook_optimizer.domain.models import ProcessingStatus
 from audiobook_optimizer.services.processor import AudiobookProcessor
 
@@ -17,6 +18,33 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+
+# Global state for AI flag
+class State:
+    ai_enabled: bool = False
+
+state = State()
+
+
+@app.callback()
+def main(
+    ai: Optional[bool] = typer.Option(
+        None,
+        "--ai/--no-ai",
+        help="Enable/disable AI verification. Default: auto (on if ANTHROPIC_API_KEY set)",
+    ),
+):
+    """Global options for audiobook-optimizer."""
+    if ai is None:
+        # Auto-detect from settings
+        settings = get_settings()
+        state.ai_enabled = settings.ai_enabled
+    else:
+        state.ai_enabled = ai
+
+    if state.ai_enabled and not ai_available():
+        console.print("[yellow]Warning: --ai requested but ANTHROPIC_API_KEY not set. Disabling AI.[/yellow]")
+        state.ai_enabled = False
 
 
 def format_duration(ms: int) -> str:
@@ -80,6 +108,8 @@ def scan(
         converter = FFmpegConverter()
         target_bitrate = 64  # Default target
 
+        # First pass: collect all metadata and quality info
+        scan_results = []
         for src in sources:
             processor._populate_file_info(src)
             src.metadata = processor.metadata_extractor.infer_metadata(src)
@@ -90,29 +120,79 @@ def scan(
             avg_bitrate = sum(bitrates) // len(bitrates) if bitrates else None
 
             # Determine what would happen on processing
-            can_remux, remux_reason = converter._can_remux(src.audio_files, mono=True)
+            can_remux, _ = converter._can_remux(src.audio_files, mono=True)
             if can_remux:
-                action = "[cyan]remux[/cyan] (no re-encoding)"
-                effective = "copy"
+                action = "remux"
+                effective_bitrate = avg_bitrate or 0
             else:
                 effective_bitrate = converter._calculate_effective_bitrate(src.audio_files, target_bitrate)
-                if min_bitrate and effective_bitrate < target_bitrate:
-                    action = f"[yellow]transcode[/yellow] → {effective_bitrate}kbps (capped by source)"
-                else:
-                    action = f"[dim]transcode[/dim] → {effective_bitrate}kbps"
-                effective = f"{effective_bitrate}kbps"
+                action = "transcode"
+
+            quality_info = {
+                "bitrate": avg_bitrate,
+                "min_bitrate": min_bitrate,
+                "effective_bitrate": effective_bitrate,
+                "action": action,
+            }
+            scan_results.append((src, src.metadata, quality_info))
+
+        # AI batch verification if enabled
+        ai_corrections = {}
+        if state.ai_enabled:
+            try:
+                from audiobook_optimizer.adapters.ai_batch import BatchAIVerifier
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    console=console,
+                    transient=True,
+                ) as progress:
+                    progress.add_task(f"AI verifying {len(scan_results)} audiobooks...", total=None)
+                    verifier = BatchAIVerifier()
+                    ai_corrections = verifier.verify_batch(scan_results)
+                if ai_corrections:
+                    console.print(f"[dim]AI suggested corrections for {len(ai_corrections)} audiobook(s)[/dim]\n")
+            except Exception as e:
+                console.print(f"[yellow]AI verification failed: {e}[/yellow]\n")
+
+        # Display results
+        for i, (src, metadata, quality_info) in enumerate(scan_results):
+            min_bitrate = quality_info["min_bitrate"]
+            avg_bitrate = quality_info["bitrate"]
+            effective_bitrate = quality_info["effective_bitrate"]
+            action = quality_info["action"]
+
+            # Format action string
+            if action == "remux":
+                action_str = "[cyan]remux[/cyan] (no re-encoding)"
+            elif min_bitrate and effective_bitrate < target_bitrate:
+                action_str = f"[yellow]transcode[/yellow] → {effective_bitrate}kbps (capped by source)"
+            else:
+                action_str = f"[dim]transcode[/dim] → {effective_bitrate}kbps"
 
             console.print(f"\n[bold cyan]{src.source_path.name}[/bold cyan]")
             console.print(f"  Files:    {src.file_count} × {src.primary_format.value.upper()}")
             console.print(f"  Size:     {format_size(src.total_size_bytes)}")
             console.print(f"  Duration: {format_duration(src.total_duration_ms)}")
             console.print(f"  Bitrate:  {format_bitrate(avg_bitrate)} (min: {format_bitrate(min_bitrate)})")
-            console.print(f"  Output:   {action}")
-            if src.metadata:
-                console.print(f"  → Title:  {src.metadata.title}")
-                console.print(f"  → Author: {src.metadata.author}")
-                if src.metadata.series:
-                    console.print(f"  → Series: {src.metadata.series} #{src.metadata.series_number}")
+            console.print(f"  Output:   {action_str}")
+
+            # Show metadata with AI corrections if any
+            if i in ai_corrections:
+                ai = ai_corrections[i]
+                console.print(f"  → Title:  {ai.title}")
+                console.print(f"  → Author: {ai.author}")
+                if ai.series:
+                    console.print(f"  → Series: {ai.series} #{ai.series_number}")
+                if ai.changes:
+                    console.print(f"  [yellow]AI corrections: {', '.join(ai.changes)}[/yellow]")
+                if ai.quality_note:
+                    console.print(f"  [yellow]⚠ {ai.quality_note}[/yellow]")
+            elif metadata:
+                console.print(f"  → Title:  {metadata.title}")
+                console.print(f"  → Author: {metadata.author}")
+                if metadata.series:
+                    console.print(f"  → Series: {metadata.series} #{metadata.series_number}")
     else:
         # Table view
         table = Table(title=f"Found {len(sources)} Audiobook(s)")
@@ -146,39 +226,20 @@ def process(
         file_okay=False,
         resolve_path=True,
     ),
-    bitrate: int = typer.Option(64, "--bitrate", "-b", help="Target bitrate in kbps (fallback if no AI)"),
+    bitrate: int = typer.Option(64, "--bitrate", "-b", help="Target bitrate in kbps"),
     stereo: bool = typer.Option(False, "--stereo", help="Keep stereo (default: mono)"),
     dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show what would be done"),
-    ai_verify: bool = typer.Option(False, "--ai-verify", help="Use Claude to verify metadata"),
-    ai_advisor: bool = typer.Option(False, "--ai-advisor", help="Use AI to decide quality settings"),
 ) -> None:
     """Process audiobooks: convert to M4B and organize."""
-    # Validate AI options early before creating processor
-    ai_verifier = None
-    if ai_verify:
-        try:
-            from audiobook_optimizer.adapters.ai_metadata import ClaudeMetadataVerifier
-            ai_verifier = ClaudeMetadataVerifier()
-            console.print("[dim]AI metadata verification enabled (using Claude haiku)[/dim]")
-        except RuntimeError as e:
-            console.print(f"[yellow]Warning: {e} - continuing without AI verification[/yellow]")
-
-    if ai_advisor:
-        try:
-            # Test that advisor can initialize (checks API key) before creating processor
-            from audiobook_optimizer.adapters.ai_advisor import AdvisorError, AudioQualityAdvisor
-            AudioQualityAdvisor()
-            console.print("[dim]AI quality advisor enabled (using Claude 3.5 Haiku via pydantic-ai)[/dim]")
-        except AdvisorError as e:
-            console.print(f"[red]Error: {e}[/red]")
-            raise typer.Exit(1)
+    # Show AI status
+    if state.ai_enabled:
+        console.print("[dim]AI verification enabled[/dim]")
 
     processor = AudiobookProcessor(
         source_dir=source,
         output_dir=output,
         bitrate=bitrate,
         mono=not stereo,
-        use_ai_advisor=ai_advisor,
     )
 
     # Scan
@@ -196,8 +257,53 @@ def process(
 
     console.print(f"Found [cyan]{len(sources)}[/cyan] audiobook(s)\n")
 
+    # Populate file info and infer metadata for all sources
+    for src in sources:
+        processor._populate_file_info(src)
+        src.metadata = processor.metadata_extractor.infer_metadata(src)
+
+    # Batch AI verification if enabled
+    ai_corrections = {}
+    if state.ai_enabled:
+        try:
+            from audiobook_optimizer.adapters.ai_batch import BatchAIVerifier, apply_verification
+            from audiobook_optimizer.adapters.ffmpeg import FFmpegConverter
+
+            converter = FFmpegConverter()
+            batch_data = []
+            for src in sources:
+                bitrates = [f.bitrate for f in src.audio_files if f.bitrate]
+                avg_bitrate = sum(bitrates) // len(bitrates) if bitrates else 0
+                can_remux, _ = converter._can_remux(src.audio_files, mono=not stereo)
+                effective_bitrate = avg_bitrate if can_remux else converter._calculate_effective_bitrate(src.audio_files, bitrate)
+                quality_info = {
+                    "bitrate": avg_bitrate,
+                    "effective_bitrate": effective_bitrate,
+                    "action": "remux" if can_remux else "transcode",
+                }
+                batch_data.append((src, src.metadata, quality_info))
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+            ) as progress:
+                progress.add_task(f"AI verifying {len(sources)} audiobooks...", total=None)
+                verifier = BatchAIVerifier()
+                ai_corrections = verifier.verify_batch(batch_data)
+
+            # Apply corrections
+            for i, src in enumerate(sources):
+                if i in ai_corrections:
+                    src.metadata = apply_verification(src.metadata, ai_corrections[i])
+
+            if ai_corrections:
+                console.print(f"[dim]AI corrected {len(ai_corrections)} audiobook(s)[/dim]\n")
+        except Exception as e:
+            console.print(f"[yellow]AI verification failed: {e}[/yellow]\n")
+
     if dry_run:
-        _show_dry_run(processor, sources, output, ai_verifier)
+        _show_dry_run(processor, sources, output)
         return
 
     # Process each
@@ -208,8 +314,6 @@ def process(
     for i, src in enumerate(sources, 1):
         console.print(f"[bold][{i}/{len(sources)}] Processing:[/bold] {src.source_path.name}")
 
-        # Populate file info first to show source stats
-        processor._populate_file_info(src)
         source_size = src.total_size_bytes
         total_source_bytes += source_size
 
@@ -218,35 +322,17 @@ def process(
         src_bitrate = sum(bitrates) // len(bitrates) if bitrates else None
 
         console.print(f"  Source: {src.file_count} files, {format_size(source_size)}, {format_bitrate(src_bitrate)}")
-
-        # Infer metadata
-        inferred_metadata = processor.metadata_extractor.infer_metadata(src)
-
-        # AI verification if enabled
-        if ai_verifier:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=console,
-                transient=True,
-            ) as progress:
-                progress.add_task("  Verifying metadata with AI...", total=None)
-                verification = ai_verifier.verify_metadata(src, inferred_metadata)
-
-            if verification.has_changes:
-                console.print(f"  [yellow]AI corrections ({verification.confidence:.0%} confidence):[/yellow]")
-                for change in verification.changes_made:
-                    console.print(f"    • {change}")
-                src.metadata = verification.suggested
-            else:
-                console.print(f"  [green]AI verified metadata ({verification.confidence:.0%} confidence)[/green]")
-                src.metadata = inferred_metadata
-        else:
-            src.metadata = inferred_metadata
-
         console.print(f"  Metadata: {src.metadata.title} by {src.metadata.author}")
         if src.metadata.series:
             console.print(f"  Series: {src.metadata.series} #{src.metadata.series_number}")
+
+        # Show AI corrections if any
+        if i - 1 in ai_corrections:
+            ai = ai_corrections[i - 1]
+            if ai.changes:
+                console.print(f"  [yellow]AI: {', '.join(ai.changes)}[/yellow]")
+            if ai.quality_note:
+                console.print(f"  [yellow]⚠ {ai.quality_note}[/yellow]")
 
         # Convert
         with Progress(
@@ -255,23 +341,9 @@ def process(
             console=console,
             transient=True,
         ) as progress:
-            if ai_advisor:
-                progress.add_task("  AI analyzing audio quality...", total=None)
-            else:
-                progress.add_task(f"  Converting to M4B ({bitrate}kbps {'mono' if not stereo else 'stereo'})...", total=None)
+            progress.add_task(f"  Converting to M4B ({bitrate}kbps {'mono' if not stereo else 'stereo'})...", total=None)
             result = processor.process(src)
             results.append(result)
-
-        # Show AI decision if used
-        if result.ai_decision:
-            ai = result.ai_decision
-            stereo_str = "stereo" if ai.preserve_stereo else "mono"
-            console.print(f"  [bold magenta]AI Decision[/bold magenta] ({ai.confidence:.0%} confidence):")
-            console.print(f"    Action:  {ai.action.upper()} → {ai.target_bitrate_kbps}kbps {stereo_str}")
-            console.print(f"    Reason:  {ai.reasoning}")
-            if ai.quality_warnings:
-                for warning in ai.quality_warnings:
-                    console.print(f"    [yellow]⚠ {warning}[/yellow]")
 
         # Handle skipped result
         if result.status == ProcessingStatus.SKIPPED:
@@ -308,7 +380,7 @@ def process(
         )
 
 
-def _show_dry_run(processor, sources, output, ai_verifier):
+def _show_dry_run(processor, sources, output):
     """Show what would be processed in dry-run mode."""
     table = Table(title="Would Process")
     table.add_column("Source", style="cyan")
@@ -317,16 +389,8 @@ def _show_dry_run(processor, sources, output, ai_verifier):
     table.add_column("Destination", style="green")
 
     for src in sources:
-        processor._populate_file_info(src)
-        metadata = processor.metadata_extractor.infer_metadata(src)
-
-        # AI verification in dry-run too
-        if ai_verifier:
-            verification = ai_verifier.verify_metadata(src, metadata)
-            if verification.has_changes:
-                metadata = verification.suggested
-
-        dest = processor.organizer.compute_destination(metadata, output)
+        # File info and metadata already populated, AI corrections already applied
+        dest = processor.organizer.compute_destination(src.metadata, output)
         table.add_row(
             src.source_path.name,
             str(src.file_count),
