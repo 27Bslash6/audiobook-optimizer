@@ -105,6 +105,31 @@ class FFmpegConverter(AudioConverter):
 
         return True, "remux possible"
 
+    def _calculate_effective_bitrate(self, source_files: list[AudioFile], target_bitrate: int) -> int:
+        """Calculate effective output bitrate - never upscale.
+
+        Uses min(source_bitrate, target_bitrate) to avoid wasting space
+        encoding low-quality sources at unnecessarily high bitrates.
+        """
+        source_bitrates = []
+        for audio in source_files:
+            if audio.bitrate:
+                source_bitrates.append(audio.bitrate)
+            else:
+                # Probe file for bitrate if not already known
+                probe = self.probe_file(audio.path)
+                format_info = probe.get("format", {})
+                if "bit_rate" in format_info:
+                    source_bitrates.append(int(format_info["bit_rate"]) // 1000)
+
+        if not source_bitrates:
+            # No bitrate info available, use target
+            return target_bitrate
+
+        # Use minimum source bitrate as ceiling
+        min_source = min(source_bitrates)
+        return min(min_source, target_bitrate)
+
     def convert_to_m4b(
         self,
         source_files: list[AudioFile],
@@ -172,10 +197,12 @@ class FFmpegConverter(AudioConverter):
                 cmd.extend(["-c:a", "copy"])
             else:
                 # Re-encode to AAC
+                # Never upscale bitrate - use min(source, target)
+                effective_bitrate = self._calculate_effective_bitrate(source_files, bitrate)
                 target_channels = 1 if mono else 2
                 cmd.extend([
                     "-c:a", "aac",
-                    "-b:a", f"{bitrate}k",
+                    "-b:a", f"{effective_bitrate}k",
                     "-ac", str(target_channels),
                 ])
 

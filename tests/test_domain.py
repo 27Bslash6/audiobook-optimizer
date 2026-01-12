@@ -144,6 +144,47 @@ class TestAuthorPatterns:
         assert matched, f"No pattern matched: {name}"
 
 
+class TestBitrateLogic:
+    """Test bitrate calculation logic."""
+
+    def test_effective_bitrate_never_upscales(self):
+        """Verify we never waste space upscaling low-bitrate sources."""
+        from audiobook_optimizer.adapters.ffmpeg import FFmpegConverter
+        from unittest.mock import patch, MagicMock
+
+        converter = FFmpegConverter.__new__(FFmpegConverter)
+        converter.ffprobe = "ffprobe"
+
+        # Mock AudioFile with known bitrates
+        mock_files = [
+            MagicMock(bitrate=24),  # 24kbps source
+            MagicMock(bitrate=32),  # 32kbps source
+        ]
+
+        # Target is 64kbps, but source min is 24kbps
+        # Should use 24kbps, not 64kbps
+        result = converter._calculate_effective_bitrate(mock_files, target_bitrate=64)
+        assert result == 24, "Should use source bitrate when lower than target"
+
+    def test_effective_bitrate_downscales_high_sources(self):
+        """Verify we compress high-bitrate sources to target."""
+        from audiobook_optimizer.adapters.ffmpeg import FFmpegConverter
+        from unittest.mock import MagicMock
+
+        converter = FFmpegConverter.__new__(FFmpegConverter)
+        converter.ffprobe = "ffprobe"
+
+        mock_files = [
+            MagicMock(bitrate=192),
+            MagicMock(bitrate=128),
+        ]
+
+        # Target is 64kbps, source min is 128kbps
+        # Should use 64kbps (compress down)
+        result = converter._calculate_effective_bitrate(mock_files, target_bitrate=64)
+        assert result == 64, "Should use target bitrate when lower than source"
+
+
 class TestSkipPatterns:
     """Test non-audiobook detection."""
 
