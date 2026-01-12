@@ -267,6 +267,9 @@ class FilesystemMetadataExtractor(MetadataExtractor):
         # Clean up common filename/folder patterns
         name_source = self._clean_name(name_source)
 
+        # Check if parent folder is an author name (e.g., "Terry Pratchett/Discworld 01 - Title")
+        parent_author = self._infer_author_from_parent(source)
+
         # Try series patterns first
         for pattern in SERIES_PATTERNS:
             match = pattern.match(name_source)
@@ -274,12 +277,19 @@ class FilesystemMetadataExtractor(MetadataExtractor):
                 groups = match.groupdict()
                 return AudiobookMetadata(
                     title=groups.get("title", name_source).strip(),
-                    author=self._infer_author_from_files(source) or "Unknown Author",
+                    author=parent_author or self._infer_author_from_files(source) or "Unknown Author",
                     series=groups.get("series", "").strip() or None,
                     series_number=float(groups["num"]) if "num" in groups else None,
                 )
 
-        # Try author patterns
+        # If we have a parent author, use full name as title (don't split on hyphens)
+        if parent_author:
+            return AudiobookMetadata(
+                title=name_source,
+                author=parent_author,
+            )
+
+        # Try author patterns (only when no parent author hint)
         for pattern in AUTHOR_PATTERNS:
             match = pattern.match(name_source)
             if match:
@@ -294,6 +304,39 @@ class FilesystemMetadataExtractor(MetadataExtractor):
             title=name_source,
             author=self._infer_author_from_files(source) or "Unknown Author",
         )
+
+    def _infer_author_from_parent(self, source: AudiobookSource) -> str | None:
+        """Check if parent folder looks like an author name.
+
+        Handles structures like "Terry Pratchett/Discworld 01 - Title".
+        Returns author if parent looks like "FirstName LastName" pattern.
+        """
+        parent = source.source_path.parent
+        if not parent or parent.name in (".", ""):
+            return None
+
+        parent_name = parent.name
+
+        # Skip common non-author parent folders
+        skip_names = {
+            "audiobooks", "audiobook", "books", "audio", "media",
+            "downloads", "torrents", "prowlarr", "complete", "incomplete",
+        }
+        if parent_name.lower() in skip_names:
+            return None
+
+        # Check if parent looks like "FirstName LastName" or "FirstName MiddleName LastName"
+        # Must be 2-4 capitalized words, no numbers, no special patterns
+        words = parent_name.split()
+        if 2 <= len(words) <= 4:
+            # All words should start with capital, be mostly letters
+            if all(
+                w[0].isupper() and w.replace(".", "").replace("'", "").isalpha()
+                for w in words
+            ):
+                return parent_name
+
+        return None
 
     def _clean_name(self, name: str) -> str:
         """Clean up common filename/folder patterns."""
