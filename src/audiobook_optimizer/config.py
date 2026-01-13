@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     ai_enabled: bool | None = None  # None = auto-detect from API key
     ai_backend: Literal["api", "cli"] = "api"  # "api" uses PydanticAI, "cli" uses claude CLI
 
+    # Cache: cachekit auto-detects from CACHEKIT_REDIS_URL env var
+    # Set CACHEKIT_REDIS_URL=redis://localhost:6379 for L2 cache, otherwise L1 only
+
     @model_validator(mode="after")
     def _auto_detect_ai(self) -> "Settings":
         """Auto-enable AI if ANTHROPIC_API_KEY is set and ai_enabled not explicit."""

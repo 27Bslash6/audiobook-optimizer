@@ -5,12 +5,34 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from cachekit import cache
+
 from audiobook_optimizer.domain.models import AudioFile, AudioFormat, Chapter
 from audiobook_optimizer.ports.interfaces import AudioConverter
 
 
 class FFmpegError(Exception):
     """FFmpeg operation failed."""
+
+
+@cache.minimal(namespace="ffprobe")
+def _probe_file_cached(path_str: str, mtime: float, ffprobe_path: str) -> dict:
+    """Cached ffprobe call. Key includes mtime for invalidation on file change.
+
+    Uses @cache.minimal for speed - no circuit breaker, no metrics overhead.
+    Auto-detects Redis from REDIS_URL env var, falls back to L1 (memory) only.
+    """
+    cmd = [
+        ffprobe_path,
+        "-v", "quiet",
+        "-print_format", "json",
+        "-show_format",
+        "-show_streams",
+        "-show_chapters",
+        path_str,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    return json.loads(result.stdout)
 
 
 class FFmpegConverter(AudioConverter):
@@ -30,32 +52,15 @@ class FFmpegConverter(AudioConverter):
                 raise FFmpegError(f"{tool} not found or not working: {e}") from e
 
     def probe_duration(self, path: Path) -> int:
-        """Get duration in milliseconds using ffprobe."""
-        cmd = [
-            self.ffprobe,
-            "-v", "quiet",
-            "-print_format", "json",
-            "-show_format",
-            str(path),
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        data = json.loads(result.stdout)
+        """Get duration in milliseconds using ffprobe. Uses cached probe data."""
+        data = self.probe_file(path)
         duration_sec = float(data["format"]["duration"])
         return int(duration_sec * 1000)
 
     def probe_file(self, path: Path) -> dict:
-        """Get full probe info for a file."""
-        cmd = [
-            self.ffprobe,
-            "-v", "quiet",
-            "-print_format", "json",
-            "-show_format",
-            "-show_streams",
-            "-show_chapters",
-            str(path),
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        return json.loads(result.stdout)
+        """Get full probe info for a file. Results are cached by path+mtime."""
+        mtime = path.stat().st_mtime
+        return _probe_file_cached(str(path), mtime, self.ffprobe)
 
     def extract_chapters_from_probe(self, probe_data: dict) -> list[Chapter]:
         """Extract chapters from ffprobe data."""
