@@ -2,7 +2,6 @@
 
 import os
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
@@ -64,10 +63,7 @@ def print_cache_debug() -> None:
         total = hits + misses
         hit_rate = (hits / total * 100) if total > 0 else 0
         location = f"L1:{l1} L2:{l2}" if l2 > 0 else f"L1:{l1}"
-        console.print(
-            f"  [cyan]{name}[/cyan]: {hits} hits ({location}), "
-            f"{misses} misses ([green]{hit_rate:.0f}%[/green])"
-        )
+        console.print(f"  [cyan]{name}[/cyan]: {hits} hits ({location}), {misses} misses ([green]{hit_rate:.0f}%[/green])")
 
     if not stats:
         console.print("  [dim]No cache operations recorded[/dim]")
@@ -86,7 +82,7 @@ def print_cache_debug() -> None:
 
 @app.callback()
 def main(
-    ai: Optional[bool] = typer.Option(
+    ai: bool | None = typer.Option(
         None,
         "--ai/--no-ai",
         help="Enable/disable AI verification. Default: auto (on if ANTHROPIC_API_KEY set)",
@@ -102,9 +98,9 @@ def main(
     state.debug = debug
 
     if ai is None:
-        # Auto-detect from settings
+        # Auto-detect from settings (validator ensures ai_enabled is never None)
         settings = get_settings()
-        state.ai_enabled = settings.ai_enabled
+        state.ai_enabled = settings.ai_enabled or False
     else:
         state.ai_enabled = ai
 
@@ -159,7 +155,7 @@ def scan(
     if verbose:
         console.print("Scanning directories...")
         sources = []
-        for i, src in enumerate(processor.scanner.scan_directory(source)):
+        for src in processor.scanner.scan_directory(source):
             console.print(f"  Found: [cyan]{src.source_path.name}[/cyan] ({src.file_count} files)")
             sources.append(src)
     else:
@@ -369,7 +365,7 @@ def process(
 
             # Apply corrections
             for i, src in enumerate(sources):
-                if i in ai_corrections:
+                if i in ai_corrections and src.metadata is not None:
                     src.metadata = apply_verification(src.metadata, ai_corrections[i])
 
             if ai_corrections:
@@ -397,6 +393,7 @@ def process(
         src_bitrate = sum(bitrates) // len(bitrates) if bitrates else None
 
         console.print(f"  Source: {src.file_count} files, {format_size(source_size)}, {format_bitrate(src_bitrate)}")
+        assert src.metadata is not None  # populated above in line 332
         console.print(f"  Metadata: {src.metadata.title} by {src.metadata.author}")
         if src.metadata.series:
             console.print(f"  Series: {src.metadata.series} #{src.metadata.series_number}")
@@ -582,16 +579,16 @@ def info(
 
                 console.print(f"\n  [bold]AI Verification ({verification.confidence:.0%} confidence):[/bold]")
                 if verification.has_changes:
-                    console.print(f"    [yellow]Suggested corrections:[/yellow]")
+                    console.print("    [yellow]Suggested corrections:[/yellow]")
                     for change in verification.changes_made:
                         console.print(f"      • {change}")
-                    console.print(f"\n    [bold]Corrected Metadata:[/bold]")
+                    console.print("\n    [bold]Corrected Metadata:[/bold]")
                     console.print(f"      Title:  {verification.suggested.title}")
                     console.print(f"      Author: {verification.suggested.author}")
                     if verification.suggested.series:
                         console.print(f"      Series: {verification.suggested.series} #{verification.suggested.series_number}")
                 else:
-                    console.print(f"    [green]Metadata looks correct[/green]")
+                    console.print("    [green]Metadata looks correct[/green]")
                 console.print(f"    Reasoning: {verification.reasoning}")
             except RuntimeError as e:
                 console.print(f"\n  [red]AI verification failed: {e}[/red]")
@@ -616,7 +613,7 @@ def verify(
         verifier = ClaudeMetadataVerifier()
     except RuntimeError as e:
         console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
     processor = AudiobookProcessor(source_dir=source, output_dir=Path("/tmp"))
 

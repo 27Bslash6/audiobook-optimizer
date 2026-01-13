@@ -5,8 +5,8 @@ Adapters implement these interfaces with concrete technology.
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 from audiobook_optimizer.domain.models import (
     AudiobookMetadata,
@@ -64,7 +64,7 @@ class AudioConverter(ABC):
         chapters: list[Chapter] | None = None,
         bitrate: int = 64,
         mono: bool = True,
-    ) -> Path:
+    ) -> tuple[Path, bool]:
         """Convert multiple audio files to single M4B.
 
         Args:
@@ -75,7 +75,7 @@ class AudioConverter(ABC):
             mono: Convert to mono (recommended for speech)
 
         Returns:
-            Path to the created M4B file
+            Tuple of (path to created M4B, was_remuxed flag)
 
         Raises:
             ConversionError: If conversion fails

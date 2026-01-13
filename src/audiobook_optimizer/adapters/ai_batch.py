@@ -69,11 +69,17 @@ def _format_items(items: list[dict]) -> str:
     lines = []
     for item in items:
         lines.append(f"[{item['index']}] {item['folder']}")
-        lines.append(f"    Files: {item['file_count']} ({', '.join(item['files'][:3])}{'...' if len(item['files']) > 3 else ''})")
-        lines.append(f"    Inferred: \"{item['inferred']['title']}\" by {item['inferred']['author']}")
+        lines.append(
+            f"    Files: {item['file_count']} ({', '.join(item['files'][:3])}{'...' if len(item['files']) > 3 else ''})"
+        )
+        lines.append(f'    Inferred: "{item["inferred"]["title"]}" by {item["inferred"]["author"]}')
         if item["inferred"]["series"]:
             lines.append(f"    Series: {item['inferred']['series']} #{item['inferred']['series_number']}")
-        lines.append(f"    Quality: {item['quality'].get('action', 'transcode')} → {item['quality'].get('effective_bitrate', '?')}kbps (source: {item['quality'].get('bitrate', '?')}kbps)")
+        q = item["quality"]
+        lines.append(
+            f"    Quality: {q.get('action', 'transcode')} → {q.get('effective_bitrate', '?')}kbps "
+            f"(source: {q.get('bitrate', '?')}kbps)"
+        )
         lines.append("")
     return "\n".join(lines)
 
@@ -145,18 +151,20 @@ class BatchAIVerifier:
         # Build items list - cachekit will JSON-serialize for cache key
         items = []
         for source, metadata, quality in audiobooks:
-            items.append({
-                "folder": source.source_path.name,
-                "files": [f.path.name for f in source.audio_files[:5]],
-                "file_count": len(source.audio_files),
-                "inferred": {
-                    "title": metadata.title,
-                    "author": metadata.author,
-                    "series": metadata.series,
-                    "series_number": metadata.series_number,
-                },
-                "quality": quality,
-            })
+            items.append(
+                {
+                    "folder": source.source_path.name,
+                    "files": [f.path.name for f in source.audio_files[:5]],
+                    "file_count": len(source.audio_files),
+                    "inferred": {
+                        "title": metadata.title,
+                        "author": metadata.author,
+                        "series": metadata.series,
+                        "series_number": metadata.series_number,
+                    },
+                    "quality": quality,
+                }
+            )
 
         # Call cached function
         result_dicts = _verify_batch_cached(items, self._model)

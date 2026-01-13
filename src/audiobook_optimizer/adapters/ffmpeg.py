@@ -7,7 +7,7 @@ from pathlib import Path
 
 from cachekit import cache
 
-from audiobook_optimizer.domain.models import AudioFile, AudioFormat, Chapter
+from audiobook_optimizer.domain.models import AudioFile, Chapter
 from audiobook_optimizer.ports.interfaces import AudioConverter
 
 
@@ -23,8 +23,10 @@ def _probe_file_cached(path_str: str, mtime: float, ffprobe_path: str) -> dict:
     """
     cmd = [
         ffprobe_path,
-        "-v", "quiet",
-        "-print_format", "json",
+        "-v",
+        "quiet",
+        "-print_format",
+        "json",
         "-show_format",
         "-show_streams",
         "-show_chapters",
@@ -188,12 +190,18 @@ class FFmpegConverter(AudioConverter):
             cmd = [
                 self.ffmpeg,
                 "-y",  # Overwrite output
-                "-f", "concat",
-                "-safe", "0",
-                "-i", str(concat_file),
-                "-i", str(metadata_file),
-                "-map_metadata", "1",
-                "-map", "0:a",  # Only audio from concat input
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(concat_file),
+                "-i",
+                str(metadata_file),
+                "-map_metadata",
+                "1",
+                "-map",
+                "0:a",  # Only audio from concat input
             ]
 
             if can_remux:
@@ -204,11 +212,16 @@ class FFmpegConverter(AudioConverter):
                 # Never upscale bitrate - use min(source, target)
                 effective_bitrate = self._calculate_effective_bitrate(source_files, bitrate)
                 target_channels = 1 if mono else 2
-                cmd.extend([
-                    "-c:a", "aac",
-                    "-b:a", f"{effective_bitrate}k",
-                    "-ac", str(target_channels),
-                ])
+                cmd.extend(
+                    [
+                        "-c:a",
+                        "aac",
+                        "-b:a",
+                        f"{effective_bitrate}k",
+                        "-ac",
+                        str(target_channels),
+                    ]
+                )
 
             cmd.extend(["-f", "ipod", str(output_path)])
 
@@ -228,17 +241,19 @@ class FFmpegConverter(AudioConverter):
         chapters = []
         current_ms = 0
 
-        for i, audio in enumerate(files, 1):
+        for audio in files:
             # Use file's title or generate from filename
             title = audio.title or audio.path.stem
             # Clean up common patterns
             title = title.replace("_", " ").strip()
 
-            chapters.append(Chapter(
-                title=title,
-                start_ms=current_ms,
-                end_ms=current_ms + audio.duration_ms,
-            ))
+            chapters.append(
+                Chapter(
+                    title=title,
+                    start_ms=current_ms,
+                    end_ms=current_ms + audio.duration_ms,
+                )
+            )
             current_ms += audio.duration_ms
 
         return chapters
@@ -254,14 +269,22 @@ class FFmpegConverter(AudioConverter):
         cmd = [
             self.ffmpeg,
             "-y",
-            "-i", str(m4b_path),
-            "-i", str(cover_path),
-            "-map", "0:a",
-            "-map", "1:0",
-            "-c:a", "copy",  # Don't re-encode audio
-            "-c:v", "mjpeg",
-            "-disposition:v:0", "attached_pic",
-            "-f", "ipod",
+            "-i",
+            str(m4b_path),
+            "-i",
+            str(cover_path),
+            "-map",
+            "0:a",
+            "-map",
+            "1:0",
+            "-c:a",
+            "copy",  # Don't re-encode audio
+            "-c:v",
+            "mjpeg",
+            "-disposition:v:0",
+            "attached_pic",
+            "-f",
+            "ipod",
             str(temp_output),
         ]
 
