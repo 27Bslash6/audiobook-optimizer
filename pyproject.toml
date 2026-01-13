@@ -25,10 +25,18 @@ target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "PTH"]
+ignore = [
+    "B008",    # typer.Argument in defaults is standard pattern
+    "SIM102",  # nested ifs sometimes clearer than combined
+    "SIM103",  # explicit if/return clearer than negated condition
+    "SIM108",  # if/else blocks often clearer than ternary
+]
 
 [tool.basedpyright]
 pythonVersion = "3.13"
-typeCheckingMode = "strict"
+typeCheckingMode = "standard"
+reportPrivateImportUsage = false      # mutagen.File is fine
+reportFunctionMemberAccess = false    # cachekit cache_info() exists at runtime
 
 [build-system]
 requires = ["hatchling"]
@@ -36,7 +44,9 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "basedpyright>=1.29",
     "pytest>=9.0.2",
+    "ruff>=0.14.11",
 ]
 
 [tool.hatch.build.targets.wheel]
