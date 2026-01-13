@@ -1,6 +1,8 @@
 """CLI entry point for audiobook-optimizer."""
 
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import typer
@@ -279,6 +281,12 @@ def scan(
     print_cache_debug()
 
 
+def _default_workers() -> int:
+    """Default worker count: cpu_count - 1, minimum 1."""
+    cpu = os.cpu_count() or 1
+    return max(1, cpu - 1)
+
+
 @app.command()
 def process(
     source: Path = typer.Argument(
@@ -298,6 +306,14 @@ def process(
     bitrate: int = typer.Option(64, "--bitrate", "-b", help="Target bitrate in kbps"),
     stereo: bool = typer.Option(False, "--stereo", help="Keep stereo (default: mono)"),
     dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show what would be done"),
+    workers: int = typer.Option(
+        _default_workers(),
+        "--workers",
+        "-w",
+        help="Parallel workers (default: cpu_count - 1)",
+        min=1,
+        max=os.cpu_count() or 1,
+    ),
 ) -> None:
     """Process audiobooks: convert to M4B and organize."""
     # Show AI status
@@ -377,23 +393,74 @@ def process(
         _show_dry_run(processor, sources, output)
         return
 
-    # Process each
+    # Show worker count
+    console.print(f"[dim]Using {workers} worker(s)[/dim]\n")
+
+    # Process audiobooks
     results = []
-    total_source_bytes = 0
+    total_source_bytes = sum(src.total_size_bytes for src in sources)
+    total_output_bytes = 0
+
+    if workers == 1:
+        # Sequential processing with detailed output
+        results, total_output_bytes = _process_sequential(processor, sources, ai_corrections, bitrate, stereo)
+    else:
+        # Parallel processing
+        results, total_output_bytes = _process_parallel(processor, sources, ai_corrections, bitrate, stereo, workers)
+
+    # Summary
+    success_count = sum(1 for r in results if r.success)
+    console.print("─" * 60)
+    console.print(f"[bold]Complete:[/bold] {success_count}/{len(results)} processed successfully")
+    if total_source_bytes > 0 and total_output_bytes > 0:
+        total_compression = (1 - total_output_bytes / total_source_bytes) * 100
+        console.print(
+            f"[bold]Total:[/bold] {format_size(total_source_bytes)} → {format_size(total_output_bytes)} "
+            f"({total_compression:.0f}% reduction)"
+        )
+
+    print_cache_debug()
+
+
+def _show_dry_run(processor, sources, output):
+    """Show what would be processed in dry-run mode."""
+    table = Table(title="Would Process")
+    table.add_column("Source", style="cyan")
+    table.add_column("Files", justify="right")
+    table.add_column("Size", justify="right")
+    table.add_column("Destination", style="green")
+
+    for src in sources:
+        # File info and metadata already populated, AI corrections already applied
+        dest = processor.organizer.compute_destination(src.metadata, output)
+        table.add_row(
+            src.source_path.name,
+            str(src.file_count),
+            format_size(src.total_size_bytes),
+            str(dest.name),
+        )
+
+    console.print(table)
+
+
+def _process_sequential(processor, sources, ai_corrections, bitrate, stereo):
+    """Process audiobooks sequentially with detailed output."""
+    from audiobook_optimizer.domain.models import ProcessingResult
+
+    results: list[ProcessingResult] = []
     total_output_bytes = 0
 
     for i, src in enumerate(sources, 1):
         console.print(f"[bold][{i}/{len(sources)}] Processing:[/bold] {src.source_path.name}")
 
         source_size = src.total_size_bytes
-        total_source_bytes += source_size
 
         # Calculate source bitrate
         bitrates = [f.bitrate for f in src.audio_files if f.bitrate]
         src_bitrate = sum(bitrates) // len(bitrates) if bitrates else None
 
         console.print(f"  Source: {src.file_count} files, {format_size(source_size)}, {format_bitrate(src_bitrate)}")
-        assert src.metadata is not None  # populated above in line 332
+        assert src.metadata is not None
         console.print(f"  Metadata: {src.metadata.title} by {src.metadata.author}")
         if src.metadata.series:
             console.print(f"  Series: {src.metadata.series} #{src.metadata.series_number}")
@@ -438,41 +505,82 @@ def process(
         else:
             console.print(f"  [red]✗ Failed: {result.error_message}[/red]")
 
-        console.print()  # Blank line between audiobooks
+        console.print()
 
-    # Summary
-    success_count = sum(1 for r in results if r.success)
-    console.print("─" * 60)
-    console.print(f"[bold]Complete:[/bold] {success_count}/{len(results)} processed successfully")
-    if total_source_bytes > 0 and total_output_bytes > 0:
-        total_compression = (1 - total_output_bytes / total_source_bytes) * 100
-        console.print(
-            f"[bold]Total:[/bold] {format_size(total_source_bytes)} → {format_size(total_output_bytes)} "
-            f"({total_compression:.0f}% reduction)"
-        )
-
-    print_cache_debug()
+    return results, total_output_bytes
 
 
-def _show_dry_run(processor, sources, output):
-    """Show what would be processed in dry-run mode."""
-    table = Table(title="Would Process")
-    table.add_column("Source", style="cyan")
-    table.add_column("Files", justify="right")
-    table.add_column("Size", justify="right")
-    table.add_column("Destination", style="green")
+def _process_parallel(processor, sources, ai_corrections, bitrate, stereo, workers):
+    """Process audiobooks in parallel with progress counter."""
+    from audiobook_optimizer.domain.models import ProcessingResult
 
-    for src in sources:
-        # File info and metadata already populated, AI corrections already applied
-        dest = processor.organizer.compute_destination(src.metadata, output)
-        table.add_row(
-            src.source_path.name,
-            str(src.file_count),
-            format_size(src.total_size_bytes),
-            str(dest.name),
-        )
+    results: list[ProcessingResult] = []
+    total_output_bytes = 0
+    completed = 0
+    print_lock = threading.Lock()
 
-    console.print(table)
+    def process_one(src):
+        """Process single audiobook (runs in thread)."""
+        return processor.process(src)
+
+    def display_result(src, result, idx):
+        """Thread-safe result display."""
+        nonlocal completed, total_output_bytes
+
+        source_size = src.total_size_bytes
+        output_size = 0
+
+        with print_lock:
+            completed += 1
+
+            if result.status == ProcessingStatus.SKIPPED:
+                console.print(f"[{completed}/{len(sources)}] [yellow]⊘ Skipped:[/yellow] {src.source_path.name}")
+            elif result.success and result.output_path:
+                output_size = result.output_path.stat().st_size
+                compression = (1 - output_size / source_size) * 100 if source_size > 0 else 0
+                method = "remux" if result.was_remuxed else f"{bitrate}kbps"
+                console.print(
+                    f"[{completed}/{len(sources)}] [green]✓[/green] {src.source_path.name} "
+                    f"({method}, {compression:.0f}% smaller)"
+                )
+            else:
+                console.print(
+                    f"[{completed}/{len(sources)}] [red]✗ Failed:[/red] {src.source_path.name} - {result.error_message}"
+                )
+
+            total_output_bytes += output_size
+
+    console.print(f"Processing {len(sources)} audiobook(s) with {workers} workers...\n")
+
+    # Submit all tasks
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        # Map source to future for result correlation
+        future_to_src = {executor.submit(process_one, src): (i, src) for i, src in enumerate(sources)}
+
+        # Process completions as they arrive
+        for future in as_completed(future_to_src):
+            idx, src = future_to_src[future]
+            try:
+                result = future.result()
+                results.append(result)
+                display_result(src, result, idx)
+            except Exception as e:
+                # Create failed result for exceptions
+                from audiobook_optimizer.domain.models import ProcessingResult as PR
+                from audiobook_optimizer.domain.models import ProcessingStatus as PS
+
+                failed = PR(
+                    source=src,
+                    status=PS.FAILED,
+                    error_message=str(e),
+                )
+                results.append(failed)
+                with print_lock:
+                    completed += 1
+                    console.print(f"[{completed}/{len(sources)}] [red]✗ Error:[/red] {src.source_path.name} - {e}")
+
+    console.print()
+    return results, total_output_bytes
 
 
 @app.command()
