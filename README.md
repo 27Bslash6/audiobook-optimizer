@@ -54,6 +54,29 @@ redis-server
 CACHEKIT_REDIS_URL=redis://localhost:6379
 ```
 
+### Optional: Higher Quality AAC Encoder
+
+The tool uses FFmpeg's native AAC encoder by default (good quality). For marginally better quality at low bitrates, install `libfdk_aac`:
+
+```bash
+# Option 1: Static build with non-free codecs (easiest)
+wget https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
+tar xf ffmpeg-release-amd64-static.tar.xz
+sudo cp ffmpeg-*-static/ffmpeg /usr/local/bin/
+sudo cp ffmpeg-*-static/ffprobe /usr/local/bin/
+
+# Option 2: Jellyfin's FFmpeg (Ubuntu/Debian)
+curl -fsSL https://repo.jellyfin.org/ubuntu/jellyfin_team.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/jellyfin.gpg
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/jellyfin.gpg] https://repo.jellyfin.org/ubuntu $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/jellyfin.list
+sudo apt update && sudo apt install jellyfin-ffmpeg6
+# Then symlink: sudo ln -sf /usr/lib/jellyfin-ffmpeg/ffmpeg /usr/local/bin/
+
+# Verify installation
+ffmpeg -encoders 2>/dev/null | grep libfdk_aac
+```
+
+The tool auto-detects `libfdk_aac` and uses it when available. At 64kbps mono for speech, the difference is subtle - skip this unless you're a perfectionist.
+
 ## Usage
 
 ```bash
@@ -65,6 +88,9 @@ uv run audiobook-optimizer scan /path/to/downloads -v
 
 # Process audiobooks to M4B (AI auto-enabled if API key set)
 uv run audiobook-optimizer process /path/to/downloads /path/to/output
+
+# Parallel processing (default: cpu_count - 1 workers)
+uv run audiobook-optimizer process /path/to/downloads /path/to/output -w 4
 
 # Process with specific AI setting
 uv run audiobook-optimizer process /path/to/downloads /path/to/output --ai
@@ -117,5 +143,6 @@ services/processor.py - Pipeline orchestration
 
 - Single `.m4b` file per book
 - Embedded chapters, cover art, and metadata
-- 64kbps mono AAC (optimal for speech, ~50% smaller than 128kbps MP3)
+- 64kbps mono AAC @ 22kHz (speech-optimized, ~50% smaller than 128kbps MP3)
+- Uses `libfdk_aac` if available, otherwise native AAC with `twoloop` coder
 - Organized as `Author - Title.m4b` or `Series 01 - Title.m4b`
