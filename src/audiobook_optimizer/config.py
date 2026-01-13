@@ -1,11 +1,23 @@
 """Configuration using pydantic-settings."""
 
-import os
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import field_validator
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class AISettings(BaseSettings):
+    """AI settings - separate class to avoid AUDIOBOOK_ prefix on API key."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    anthropic_api_key: SecretStr | None = None
 
 
 class Settings(BaseSettings):
@@ -15,6 +27,7 @@ class Settings(BaseSettings):
         env_prefix="AUDIOBOOK_",
         env_file=".env",
         env_file_encoding="utf-8",
+        extra="ignore",
     )
 
     # Directories
@@ -34,20 +47,26 @@ class Settings(BaseSettings):
     ai_enabled: bool | None = None  # None = auto-detect from API key
     ai_backend: Literal["api", "cli"] = "api"  # "api" uses PydanticAI, "cli" uses claude CLI
 
-    @field_validator("ai_enabled", mode="before")
-    @classmethod
-    def auto_detect_ai(cls, v):
+    @model_validator(mode="after")
+    def _auto_detect_ai(self) -> "Settings":
         """Auto-enable AI if ANTHROPIC_API_KEY is set and ai_enabled not explicit."""
-        if v is None:
-            return bool(os.getenv("ANTHROPIC_API_KEY"))
-        return v
+        if self.ai_enabled is None:
+            self.ai_enabled = AISettings().anthropic_api_key is not None
+        return self
 
 
+@lru_cache
 def get_settings() -> Settings:
-    """Get settings instance."""
+    """Get cached settings instance."""
     return Settings()
+
+
+@lru_cache
+def get_ai_settings() -> AISettings:
+    """Get cached AI settings instance."""
+    return AISettings()
 
 
 def ai_available() -> bool:
     """Check if AI features are available (API key present)."""
-    return bool(os.getenv("ANTHROPIC_API_KEY"))
+    return get_ai_settings().anthropic_api_key is not None
