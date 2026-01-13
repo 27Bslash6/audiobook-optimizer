@@ -14,3 +14,6 @@ wheels/
 
 # Claude Code
 .claude/
+
+# Test fixtures (downloaded audio files)
+tests/.fixtures/
