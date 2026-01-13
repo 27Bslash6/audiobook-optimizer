@@ -43,6 +43,7 @@ class FFmpegConverter(AudioConverter):
         self.ffmpeg = ffmpeg_path
         self.ffprobe = ffprobe_path
         self._verify_tools()
+        self._has_libfdk_aac: bool | None = None  # Lazy detection
 
     def _verify_tools(self) -> None:
         """Verify ffmpeg and ffprobe are available."""
@@ -51,6 +52,17 @@ class FFmpegConverter(AudioConverter):
                 subprocess.run([tool, "-version"], capture_output=True, check=True)
             except (subprocess.CalledProcessError, FileNotFoundError) as e:
                 raise FFmpegError(f"{tool} not found or not working: {e}") from e
+
+    def has_libfdk_aac(self) -> bool:
+        """Check if libfdk_aac encoder is available (higher quality AAC)."""
+        if self._has_libfdk_aac is None:
+            result = subprocess.run(
+                [self.ffmpeg, "-hide_banner", "-encoders"],
+                capture_output=True,
+                text=True,
+            )
+            self._has_libfdk_aac = "libfdk_aac" in result.stdout
+        return self._has_libfdk_aac
 
     def probe_duration(self, path: Path) -> int:
         """Get duration in milliseconds using ffprobe. Uses cached probe data."""
@@ -208,20 +220,49 @@ class FFmpegConverter(AudioConverter):
                 # Stream copy - no re-encoding
                 cmd.extend(["-c:a", "copy"])
             else:
-                # Re-encode to AAC
+                # Re-encode to AAC with speech-optimized settings
                 # Never upscale bitrate - use min(source, target)
                 effective_bitrate = self._calculate_effective_bitrate(source_files, bitrate)
                 target_channels = 1 if mono else 2
-                cmd.extend(
-                    [
-                        "-c:a",
-                        "aac",
-                        "-b:a",
-                        f"{effective_bitrate}k",
-                        "-ac",
-                        str(target_channels),
-                    ]
-                )
+
+                if self.has_libfdk_aac():
+                    # libfdk_aac: higher quality Fraunhofer encoder
+                    cmd.extend(
+                        [
+                            "-c:a",
+                            "libfdk_aac",
+                            "-profile:a",
+                            "aac_low",
+                            "-b:a",
+                            f"{effective_bitrate}k",
+                            "-ac",
+                            str(target_channels),
+                            "-ar",
+                            "22050",  # Optimal for speech
+                            "-cutoff",
+                            "20000",
+                            "-afterburner",
+                            "1",
+                        ]
+                    )
+                else:
+                    # Native AAC encoder with optimizations
+                    cmd.extend(
+                        [
+                            "-c:a",
+                            "aac",
+                            "-aac_coder",
+                            "twoloop",  # Better quality coder
+                            "-b:a",
+                            f"{effective_bitrate}k",
+                            "-ac",
+                            str(target_channels),
+                            "-ar",
+                            "22050",  # Optimal for speech
+                            "-cutoff",
+                            "18000",  # Extend frequency response
+                        ]
+                    )
 
             cmd.extend(["-f", "ipod", str(output_path)])
 
