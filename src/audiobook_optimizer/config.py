@@ -1,7 +1,6 @@
 """Configuration using pydantic-settings."""
 
 from functools import lru_cache
-from pathlib import Path
 from typing import Literal
 
 from pydantic import SecretStr, model_validator
@@ -29,10 +28,6 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
-
-    # Directories
-    source_dir: Path = Path("/home/fish/media/data/torrents/prowlarr")
-    output_dir: Path = Path("/home/fish/media/data/media/books/audiobooks")
 
     # Conversion settings
     bitrate: int = 64  # kbps - 64 is fine for speech
