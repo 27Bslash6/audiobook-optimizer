@@ -15,12 +15,11 @@ class FFmpegError(Exception):
     """FFmpeg operation failed."""
 
 
-@cache.minimal(namespace="ffprobe")
+@cache(namespace="ffprobe")
 def _probe_file_cached(path_str: str, mtime: float, ffprobe_path: str) -> dict:
     """Cached ffprobe call. Key includes mtime for invalidation on file change.
 
-    Uses @cache.minimal for speed - no circuit breaker, no metrics overhead.
-    Auto-detects Redis from REDIS_URL env var, falls back to L1 (memory) only.
+    Auto-detects Redis from CACHEKIT_REDIS_URL env var, falls back to L1 (memory) only.
     """
     cmd = [
         ffprobe_path,

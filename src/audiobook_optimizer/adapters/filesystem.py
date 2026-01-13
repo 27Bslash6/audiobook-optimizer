@@ -85,11 +85,13 @@ class FilesystemScanner(AudioScanner):
             if item.is_file() and item.suffix.lower() in AUDIO_EXTENSIONS:
                 yield AudiobookSource(
                     source_path=path,  # Use parent dir for context
-                    audio_files=[AudioFile(
-                        path=item,
-                        format=AudioFormat.from_extension(item.suffix),
-                        duration_ms=0,
-                    )],
+                    audio_files=[
+                        AudioFile(
+                            path=item,
+                            format=AudioFormat.from_extension(item.suffix),
+                            duration_ms=0,
+                        )
+                    ],
                 )
 
         # Then, scan subdirectories
@@ -114,7 +116,11 @@ class FilesystemScanner(AudioScanner):
         return any(pattern.search(name) for pattern in SKIP_PATTERNS)
 
     def is_audiobook_directory(self, path: Path) -> bool:
-        """Check if directory contains audiobook content."""
+        """Check if directory contains audiobook content.
+
+        Simple, robust logic: a directory is an audiobook if it has audio files directly
+        and doesn't have subdirectories that also contain audiobooks.
+        """
         if not path.is_dir():
             return False
 
@@ -122,14 +128,67 @@ class FilesystemScanner(AudioScanner):
         if self._should_skip(path):
             return False
 
-        audio_files = list(self._iter_audio_files(path, recursive=False))
-        if len(audio_files) >= self.min_files:
+        # Count audio files directly in this directory (non-recursive)
+        direct_audio_files = list(self._iter_audio_files(path, recursive=False))
+
+        # Must have minimum audio files directly
+        if len(direct_audio_files) < self.min_files:
+            return False
+
+        # Check if any subdirectories also contain audiobooks
+        # If so, this is likely a collection directory, not an audiobook itself
+        # BUT: we'll still process the files here as standalone audiobooks in the scan_directory logic
+        for item in path.iterdir():
+            if item.is_dir() and not item.name.startswith("."):
+                if not self._should_skip(item):
+                    sub_audio = list(self._iter_audio_files(item, recursive=False))
+                    if len(sub_audio) >= self.min_files:
+                        # Subdirectory has audiobook content, so this is a collection directory
+                        # Return False so scan_directory will recurse into subdirs
+                        # But the audio files in this directory will be processed as standalone files
+                        return False
+
+        # Has audio files directly and no competing subdirectories = audiobook
+        return True
+
+        # Skip directories that match exclusion patterns
+        if self._should_skip(path):
+            return False
+
+        # Count audio files directly in this directory (non-recursive)
+        direct_audio_files = list(self._iter_audio_files(path, recursive=False))
+
+        # Primary criterion: directory with enough audio files directly
+        if len(direct_audio_files) >= self.min_files:
             return True
 
         # Check for audiobook indicators in folder name
         indicators = ["audiobook", "audio book", "narrated", "unabridged", "abridged"]
         folder_lower = path.name.lower()
-        return any(ind in folder_lower for ind in indicators)
+
+        if any(ind in folder_lower for ind in indicators):
+            # For directories with audiobook-related names, ensure they're not collection directories
+            # A collection directory has subdirectories that contain audio files
+            subdirs_with_audio = 0
+            total_subdirs = 0
+
+            for item in path.iterdir():
+                if item.is_dir() and not item.name.startswith("."):
+                    total_subdirs += 1
+                    # Quick check: does this subdirectory have audio files?
+                    sub_audio = list(self._iter_audio_files(item, recursive=False))
+                    if len(sub_audio) >= self.min_files:
+                        subdirs_with_audio += 1
+
+            # If multiple subdirectories contain audiobooks, this is likely a collection
+            # If this directory has NO direct audio files but has subdirs with audio, it's a collection
+            if subdirs_with_audio > 0 and len(direct_audio_files) == 0:
+                return False
+
+            # If it has audiobook-related name and no conflicting subdirs, treat as audiobook
+            return True
+
+        return False
 
     def _iter_audio_files(self, path: Path, recursive: bool = True) -> Iterator[Path]:
         """Iterate over audio files in directory."""
@@ -142,11 +201,13 @@ class FilesystemScanner(AudioScanner):
         """Find and create AudioFile objects for all audio in directory."""
         files = []
         for audio_path in sorted(self._iter_audio_files(path)):
-            files.append(AudioFile(
-                path=audio_path,
-                format=AudioFormat.from_extension(audio_path.suffix),
-                duration_ms=0,  # Will be populated by metadata extractor
-            ))
+            files.append(
+                AudioFile(
+                    path=audio_path,
+                    format=AudioFormat.from_extension(audio_path.suffix),
+                    duration_ms=0,  # Will be populated by metadata extractor
+                )
+            )
         return files
 
 
@@ -157,6 +218,7 @@ class FilesystemMetadataExtractor(MetadataExtractor):
         # Import mutagen lazily to avoid import errors if not installed
         try:
             import mutagen
+
             self._mutagen = mutagen
         except ImportError:
             self._mutagen = None
@@ -319,8 +381,16 @@ class FilesystemMetadataExtractor(MetadataExtractor):
 
         # Skip common non-author parent folders
         skip_names = {
-            "audiobooks", "audiobook", "books", "audio", "media",
-            "downloads", "torrents", "prowlarr", "complete", "incomplete",
+            "audiobooks",
+            "audiobook",
+            "books",
+            "audio",
+            "media",
+            "downloads",
+            "torrents",
+            "prowlarr",
+            "complete",
+            "incomplete",
         }
         if parent_name.lower() in skip_names:
             return None
@@ -330,10 +400,7 @@ class FilesystemMetadataExtractor(MetadataExtractor):
         words = parent_name.split()
         if 2 <= len(words) <= 4:
             # All words should start with capital, be mostly letters
-            if all(
-                w[0].isupper() and w.replace(".", "").replace("'", "").isalpha()
-                for w in words
-            ):
+            if all(w[0].isupper() and w.replace(".", "").replace("'", "").isalpha() for w in words):
                 return parent_name
 
         return None
@@ -350,7 +417,7 @@ class FilesystemMetadataExtractor(MetadataExtractor):
             suffixes = [" Audiobook", " [audiobook]", " (Audiobook)", " - audiobook", " audiobook"]
             for suffix in suffixes:
                 if name.lower().endswith(suffix.lower()):
-                    name = name[:-len(suffix)]
+                    name = name[: -len(suffix)]
             # Remove quality/format tags like "(Stevens) 32k 12.58.21 {179mb}"
             name = re.sub(r"\s*\([^)]+\)\s*\d+k\s*[\d.]+\s*\{[^}]+\}$", "", name)
             # Remove year prefix like "2008 - "

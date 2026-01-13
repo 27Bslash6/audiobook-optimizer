@@ -78,7 +78,7 @@ def _format_items(items: list[dict]) -> str:
     return "\n".join(lines)
 
 
-@cache.production(ttl=86400 * 7, namespace="ai_verify")
+@cache(ttl=86400 * 7, namespace="ai_verify")
 def _verify_batch_cached(items: list[dict], model: str) -> list[dict]:
     """Cached AI verification call. Cachekit auto-hashes the items list.
 

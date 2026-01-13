@@ -1,5 +1,6 @@
 """CLI entry point for audiobook-optimizer."""
 
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -19,11 +20,68 @@ app = typer.Typer(
 )
 console = Console()
 
-# Global state for AI flag
+
+# Global state for flags
 class State:
     ai_enabled: bool = False
+    debug: bool = False
+
 
 state = State()
+
+
+def print_cache_debug() -> None:
+    """Print cachekit cache metrics for debugging."""
+    if not state.debug:
+        return
+
+    console.print("\n[dim]─── Cache Debug ───[/dim]")
+
+    # Get stats from cached functions via cache_info()
+    from audiobook_optimizer.adapters.ffmpeg import _probe_file_cached
+
+    stats: list[tuple[str, int, int, int, int]] = []  # (name, l1, l2, hits, misses)
+
+    # ffprobe cache
+    try:
+        info = _probe_file_cached.cache_info()
+        stats.append(("ffprobe", info.l1_hits, info.l2_hits, info.hits, info.misses))
+    except Exception:
+        pass
+
+    # AI verification cache (only if used)
+    try:
+        from audiobook_optimizer.adapters.ai_batch import _verify_batch_cached
+
+        info = _verify_batch_cached.cache_info()
+        if info.hits + info.misses > 0:
+            stats.append(("ai_verify", info.l1_hits, info.l2_hits, info.hits, info.misses))
+    except Exception:
+        pass
+
+    # Display stats
+    for name, l1, l2, hits, misses in stats:
+        total = hits + misses
+        hit_rate = (hits / total * 100) if total > 0 else 0
+        location = f"L1:{l1} L2:{l2}" if l2 > 0 else f"L1:{l1}"
+        console.print(
+            f"  [cyan]{name}[/cyan]: {hits} hits ({location}), "
+            f"{misses} misses ([green]{hit_rate:.0f}%[/green])"
+        )
+
+    if not stats:
+        console.print("  [dim]No cache operations recorded[/dim]")
+
+    # Show Redis connection status
+    redis_url = os.getenv("CACHEKIT_REDIS_URL") or os.getenv("REDIS_URL")
+    if redis_url:
+        # Mask password if present
+        display_url = redis_url.split("@")[-1] if "@" in redis_url else redis_url
+        console.print(f"  [dim]Redis: {display_url}[/dim]")
+    else:
+        console.print("  [dim]Redis: not configured (L1 only)[/dim]")
+
+    console.print("[dim]───────────────────[/dim]")
 
 
 @app.callback()
@@ -33,8 +91,16 @@ def main(
         "--ai/--no-ai",
         help="Enable/disable AI verification. Default: auto (on if ANTHROPIC_API_KEY set)",
     ),
+    debug: bool = typer.Option(
+        False,
+        "--debug",
+        "-vv",
+        help="Show cache debug info (hits/misses) at end of operation",
+    ),
 ):
     """Global options for audiobook-optimizer."""
+    state.debug = debug
+
     if ai is None:
         # Auto-detect from settings
         settings = get_settings()
@@ -90,13 +156,20 @@ def scan(
         output_dir=Path("/tmp"),  # Won't be used
     )
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-    ) as progress:
-        progress.add_task("Scanning for audiobooks...", total=None)
-        sources = processor.scan()
+    if verbose:
+        console.print("Scanning directories...")
+        sources = []
+        for i, src in enumerate(processor.scanner.scan_directory(source)):
+            console.print(f"  Found: [cyan]{src.source_path.name}[/cyan] ({src.file_count} files)")
+            sources.append(src)
+    else:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            progress.add_task("Scanning for audiobooks...", total=None)
+            sources = processor.scan()
 
     if not sources:
         console.print("[yellow]No audiobooks found.[/yellow]")
@@ -105,12 +178,15 @@ def scan(
     if verbose:
         # Detailed view with file info
         from audiobook_optimizer.adapters.ffmpeg import FFmpegConverter
+
         converter = FFmpegConverter()
         target_bitrate = 64  # Default target
 
         # First pass: collect all metadata and quality info
         scan_results = []
-        for src in sources:
+        console.print(f"\nAnalyzing {len(sources)} audiobook(s)...")
+        for i, src in enumerate(sources, 1):
+            console.print(f"  [{i}/{len(sources)}] Analyzing: [cyan]{src.source_path.name}[/cyan]")
             processor._populate_file_info(src)
             src.metadata = processor.metadata_extractor.infer_metadata(src)
 
@@ -141,15 +217,10 @@ def scan(
         if state.ai_enabled:
             try:
                 from audiobook_optimizer.adapters.ai_batch import BatchAIVerifier
-                with Progress(
-                    SpinnerColumn(),
-                    TextColumn("[progress.description]{task.description}"),
-                    console=console,
-                    transient=True,
-                ) as progress:
-                    progress.add_task(f"AI verifying {len(scan_results)} audiobooks...", total=None)
-                    verifier = BatchAIVerifier()
-                    ai_corrections = verifier.verify_batch(scan_results)
+
+                console.print(f"\nAI verifying {len(scan_results)} audiobooks...")
+                verifier = BatchAIVerifier()
+                ai_corrections = verifier.verify_batch(scan_results)
                 if ai_corrections:
                     console.print(f"[dim]AI suggested corrections for {len(ai_corrections)} audiobook(s)[/dim]\n")
             except Exception as e:
@@ -208,6 +279,8 @@ def scan(
             )
 
         console.print(table)
+
+    print_cache_debug()
 
 
 @app.command()
@@ -275,7 +348,9 @@ def process(
                 bitrates = [f.bitrate for f in src.audio_files if f.bitrate]
                 avg_bitrate = sum(bitrates) // len(bitrates) if bitrates else 0
                 can_remux, _ = converter._can_remux(src.audio_files, mono=not stereo)
-                effective_bitrate = avg_bitrate if can_remux else converter._calculate_effective_bitrate(src.audio_files, bitrate)
+                effective_bitrate = (
+                    avg_bitrate if can_remux else converter._calculate_effective_bitrate(src.audio_files, bitrate)
+                )
                 quality_info = {
                     "bitrate": avg_bitrate,
                     "effective_bitrate": effective_bitrate,
@@ -378,6 +453,8 @@ def process(
             f"[bold]Total:[/bold] {format_size(total_source_bytes)} → {format_size(total_output_bytes)} "
             f"({total_compression:.0f}% reduction)"
         )
+
+    print_cache_debug()
 
 
 def _show_dry_run(processor, sources, output):
@@ -491,6 +568,7 @@ def info(
         if ai_verify:
             try:
                 from audiobook_optimizer.adapters.ai_metadata import ClaudeMetadataVerifier
+
                 verifier = ClaudeMetadataVerifier()
 
                 with Progress(
@@ -518,6 +596,8 @@ def info(
             except RuntimeError as e:
                 console.print(f"\n  [red]AI verification failed: {e}[/red]")
 
+    print_cache_debug()
+
 
 @app.command()
 def verify(
@@ -532,6 +612,7 @@ def verify(
     """Verify metadata for all audiobooks using AI."""
     try:
         from audiobook_optimizer.adapters.ai_metadata import ClaudeMetadataVerifier
+
         verifier = ClaudeMetadataVerifier()
     except RuntimeError as e:
         console.print(f"[red]Error: {e}[/red]")
@@ -578,6 +659,8 @@ def verify(
             console.print(f"[green]✓[/green]  {src.source_path.name}")
 
     console.print(f"\n[bold]Summary:[/bold] {changes_found}/{len(sources)} audiobooks have suggested corrections")
+
+    print_cache_debug()
 
 
 if __name__ == "__main__":
