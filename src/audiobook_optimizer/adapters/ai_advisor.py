@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
-from audiobook_optimizer.domain.models import AudiobookSource, AudioFormat
+from audiobook_optimizer.domain.models import AudiobookSource
 
 # Load .env from project root if it exists
 _env_file = Path(__file__).parent.parent.parent.parent / ".env"
@@ -36,9 +36,7 @@ class ProcessingAction(str, Enum):
 class AudioDecision(BaseModel):
     """Structured output for AI audio quality decisions."""
 
-    action: ProcessingAction = Field(
-        description="The recommended processing action"
-    )
+    action: ProcessingAction = Field(description="The recommended processing action")
     target_bitrate_kbps: int = Field(
         ge=32,
         le=320,
@@ -204,7 +202,7 @@ SOURCE CHARACTERISTICS:
 - Format: {analysis.source_format}
 - Codec: {analysis.source_codec}
 - Bitrate: {analysis.source_bitrate_kbps} kbps
-- Channels: {analysis.source_channels} ({'stereo' if analysis.source_channels > 1 else 'mono'})
+- Channels: {analysis.source_channels} ({"stereo" if analysis.source_channels > 1 else "mono"})
 - Sample rate: {analysis.source_sample_rate} Hz
 - Duration: {analysis.total_duration_hours:.1f} hours
 - Files: {analysis.file_count}
@@ -233,7 +231,7 @@ SOURCE CHARACTERISTICS:
 - Format: {analysis.source_format}
 - Codec: {analysis.source_codec}
 - Bitrate: {analysis.source_bitrate_kbps} kbps
-- Channels: {analysis.source_channels} ({'stereo' if analysis.source_channels > 1 else 'mono'})
+- Channels: {analysis.source_channels} ({"stereo" if analysis.source_channels > 1 else "mono"})
 - Sample rate: {analysis.source_sample_rate} Hz
 - Duration: {analysis.total_duration_hours:.1f} hours
 - Files: {analysis.file_count}

@@ -102,8 +102,8 @@ class AudiobookMetadata:
         """Sanitized folder name for organization."""
         name = self.display_name
         # Remove/replace problematic characters
-        for char in ['/', '\\', ':', '*', '?', '"', '<', '>', '|']:
-            name = name.replace(char, '-')
+        for char in ["/", "\\", ":", "*", "?", '"', "<", ">", "|"]:
+            name = name.replace(char, "-")
         return name.strip()
 
 

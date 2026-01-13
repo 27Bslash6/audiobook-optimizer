@@ -3,7 +3,7 @@
 import tempfile
 from pathlib import Path
 
-from audiobook_optimizer.adapters.ai_advisor import AdvisorError, AudioDecision, AudioQualityAdvisor, ProcessingAction
+from audiobook_optimizer.adapters.ai_advisor import AudioDecision, AudioQualityAdvisor, ProcessingAction
 from audiobook_optimizer.adapters.ffmpeg import FFmpegConverter, FFmpegError
 from audiobook_optimizer.adapters.filesystem import FilesystemMetadataExtractor, FilesystemOrganizer, FilesystemScanner
 from audiobook_optimizer.adapters.tagger import MutagenTagger, TaggerError
@@ -183,19 +183,23 @@ class AudiobookProcessor(ProcessingPipeline):
             if file_chapters:
                 # Offset chapters to account for previous files
                 for ch in file_chapters:
-                    all_chapters.append(Chapter(
-                        title=ch.title,
-                        start_ms=ch.start_ms + current_offset,
-                        end_ms=(ch.end_ms + current_offset) if ch.end_ms else None,
-                    ))
+                    all_chapters.append(
+                        Chapter(
+                            title=ch.title,
+                            start_ms=ch.start_ms + current_offset,
+                            end_ms=(ch.end_ms + current_offset) if ch.end_ms else None,
+                        )
+                    )
             else:
                 # Create a chapter for this file
                 title = audio.title or audio.path.stem
-                all_chapters.append(Chapter(
-                    title=title,
-                    start_ms=current_offset,
-                    end_ms=current_offset + audio.duration_ms,
-                ))
+                all_chapters.append(
+                    Chapter(
+                        title=title,
+                        start_ms=current_offset,
+                        end_ms=current_offset + audio.duration_ms,
+                    )
+                )
 
             current_offset += audio.duration_ms
 

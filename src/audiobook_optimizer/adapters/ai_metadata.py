@@ -86,7 +86,8 @@ Rules:
                 [
                     self.claude_path,
                     "-p",
-                    "--model", self.model,
+                    "--model",
+                    self.model,
                     "--dangerously-skip-permissions",
                     prompt,
                 ],

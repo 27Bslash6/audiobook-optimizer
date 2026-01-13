@@ -1,34 +1,36 @@
 """Tests for domain models and metadata inference."""
 
 import pytest
-from pathlib import Path
 
-from audiobook_optimizer.domain.models import (
-    AudioFormat,
-    AudiobookMetadata,
-    Chapter,
-)
 from audiobook_optimizer.adapters.filesystem import (
-    FilesystemMetadataExtractor,
-    SERIES_PATTERNS,
     AUTHOR_PATTERNS,
+    SERIES_PATTERNS,
     SKIP_PATTERNS,
+    FilesystemMetadataExtractor,
+)
+from audiobook_optimizer.domain.models import (
+    AudiobookMetadata,
+    AudioFormat,
+    Chapter,
 )
 
 
 class TestAudioFormat:
     """Test AudioFormat enum."""
 
-    @pytest.mark.parametrize("ext,expected", [
-        (".mp3", AudioFormat.MP3),
-        (".MP3", AudioFormat.MP3),
-        ("mp3", AudioFormat.MP3),
-        (".m4a", AudioFormat.M4A),
-        (".m4b", AudioFormat.M4B),
-        (".flac", AudioFormat.FLAC),
-        (".ogg", AudioFormat.OGG),
-        (".xyz", AudioFormat.UNKNOWN),
-    ])
+    @pytest.mark.parametrize(
+        "ext,expected",
+        [
+            (".mp3", AudioFormat.MP3),
+            (".MP3", AudioFormat.MP3),
+            ("mp3", AudioFormat.MP3),
+            (".m4a", AudioFormat.M4A),
+            (".m4b", AudioFormat.M4B),
+            (".flac", AudioFormat.FLAC),
+            (".ogg", AudioFormat.OGG),
+            (".xyz", AudioFormat.UNKNOWN),
+        ],
+    )
     def test_from_extension(self, ext: str, expected: AudioFormat):
         assert AudioFormat.from_extension(ext) == expected
 
@@ -83,16 +85,21 @@ class TestNameCleaning:
     def extractor(self):
         return FilesystemMetadataExtractor()
 
-    @pytest.mark.parametrize("dirty,clean", [
-        ("Title [audiobook]", "Title"),
-        ("Title Audiobook", "Title"),
-        ("Title (Audiobook)", "Title"),
-        ("Title by dessalines", "Title"),
-        ("Title by uploader", "Title"),
-        ("2008 - Title", "Title"),
-        ("Michael Parenti - Friendly Feudalism - The Tibet Myth [audiobook] by dessalines",
-         "Michael Parenti - Friendly Feudalism - The Tibet Myth"),
-    ])
+    @pytest.mark.parametrize(
+        "dirty,clean",
+        [
+            ("Title [audiobook]", "Title"),
+            ("Title Audiobook", "Title"),
+            ("Title (Audiobook)", "Title"),
+            ("Title by dessalines", "Title"),
+            ("Title by uploader", "Title"),
+            ("2008 - Title", "Title"),
+            (
+                "Michael Parenti - Friendly Feudalism - The Tibet Myth [audiobook] by dessalines",
+                "Michael Parenti - Friendly Feudalism - The Tibet Myth",
+            ),
+        ],
+    )
     def test_clean_name(self, extractor, dirty: str, clean: str):
         assert extractor._clean_name(dirty) == clean
 
@@ -100,14 +107,17 @@ class TestNameCleaning:
 class TestSeriesPatterns:
     """Test series detection patterns."""
 
-    @pytest.mark.parametrize("name,series,num,title", [
-        ("Discworld 01 - The Colour of Magic", "Discworld", "01", "The Colour of Magic"),
-        ("Discworld 1 - Title", "Discworld", "1", "Title"),
-        ("Series 12.5 - Half Book", "Series", "12.5", "Half Book"),
-        ("01 - First Book", None, "01", "First Book"),
-        ("Book 3 - Third", None, "3", "Third"),
-        ("Volume 2 - Second", None, "2", "Second"),
-    ])
+    @pytest.mark.parametrize(
+        "name,series,num,title",
+        [
+            ("Discworld 01 - The Colour of Magic", "Discworld", "01", "The Colour of Magic"),
+            ("Discworld 1 - Title", "Discworld", "1", "Title"),
+            ("Series 12.5 - Half Book", "Series", "12.5", "Half Book"),
+            ("01 - First Book", None, "01", "First Book"),
+            ("Book 3 - Third", None, "3", "Third"),
+            ("Volume 2 - Second", None, "2", "Second"),
+        ],
+    )
     def test_series_patterns(self, name: str, series: str | None, num: str, title: str):
         matched = False
         for pattern in SERIES_PATTERNS:
@@ -126,11 +136,14 @@ class TestSeriesPatterns:
 class TestAuthorPatterns:
     """Test author detection patterns."""
 
-    @pytest.mark.parametrize("name,author,title", [
-        ("Michael Parenti - Friendly Feudalism", "Michael Parenti", "Friendly Feudalism"),
-        ("The Great Book by John Smith", "John Smith", "The Great Book"),
-        ("Smith, John - A Title", "Smith, John", "A Title"),
-    ])
+    @pytest.mark.parametrize(
+        "name,author,title",
+        [
+            ("Michael Parenti - Friendly Feudalism", "Michael Parenti", "Friendly Feudalism"),
+            ("The Great Book by John Smith", "John Smith", "The Great Book"),
+            ("Smith, John - A Title", "Smith, John", "A Title"),
+        ],
+    )
     def test_author_patterns(self, name: str, author: str, title: str):
         matched = False
         for pattern in AUTHOR_PATTERNS:
@@ -149,8 +162,9 @@ class TestBitrateLogic:
 
     def test_effective_bitrate_never_upscales(self):
         """Verify we never waste space upscaling low-bitrate sources."""
+        from unittest.mock import MagicMock
+
         from audiobook_optimizer.adapters.ffmpeg import FFmpegConverter
-        from unittest.mock import patch, MagicMock
 
         converter = FFmpegConverter.__new__(FFmpegConverter)
         converter.ffprobe = "ffprobe"
@@ -168,8 +182,9 @@ class TestBitrateLogic:
 
     def test_effective_bitrate_downscales_high_sources(self):
         """Verify we compress high-bitrate sources to target."""
-        from audiobook_optimizer.adapters.ffmpeg import FFmpegConverter
         from unittest.mock import MagicMock
+
+        from audiobook_optimizer.adapters.ffmpeg import FFmpegConverter
 
         converter = FFmpegConverter.__new__(FFmpegConverter)
         converter.ffprobe = "ffprobe"
@@ -188,21 +203,27 @@ class TestBitrateLogic:
 class TestSkipPatterns:
     """Test non-audiobook detection."""
 
-    @pytest.mark.parametrize("name", [
-        "Some EPUB Collection",
-        "N64 Emulator ROMs",
-        "PCSX2 BIOS Files",
-        "Album OST Soundtrack",
-        "Game Music MP3 320k",
-    ])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Some EPUB Collection",
+            "N64 Emulator ROMs",
+            "PCSX2 BIOS Files",
+            "Album OST Soundtrack",
+            "Game Music MP3 320k",
+        ],
+    )
     def test_skip_patterns_match(self, name: str):
         matched = any(p.search(name) for p in SKIP_PATTERNS)
         assert matched, f"Should skip: {name}"
 
-    @pytest.mark.parametrize("name", [
-        "Discworld 01 - The Colour of Magic",
-        "Michael Parenti - Friendly Feudalism",
-    ])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Discworld 01 - The Colour of Magic",
+            "Michael Parenti - Friendly Feudalism",
+        ],
+    )
     def test_skip_patterns_dont_match_audiobooks(self, name: str):
         matched = any(p.search(name) for p in SKIP_PATTERNS)
         assert not matched, f"Should NOT skip: {name}"
