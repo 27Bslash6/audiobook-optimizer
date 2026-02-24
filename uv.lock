@@ -177,6 +177,11 @@ dependencies = [
     { name = "typer" },
 ]
 
+[package.optional-dependencies]
+ai = [
+    { name = "anthropic" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "basedpyright" },
@@ -186,6 +191,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anthropic", marker = "extra == 'ai'", specifier = ">=0.40" },
     { name = "cachekit", specifier = ">=0.3.0" },
     { name = "mutagen", specifier = ">=1.47" },
     { name = "pyarrow", specifier = ">=22.0.0" },
@@ -196,6 +202,7 @@ requires-dist = [
     { name = "rich", specifier = ">=13.9" },
     { name = "typer", specifier = ">=0.15" },
 ]
+provides-extras = ["ai"]
 
 [package.metadata.requires-dev]
 dev = [

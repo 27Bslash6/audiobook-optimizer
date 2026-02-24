@@ -12,6 +12,10 @@ wheels/
 # Environment (secrets)
 .env
 
+# IDE
+.vscode/
+.idea/
+
 # Claude Code
 .claude/
 

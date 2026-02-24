@@ -452,8 +452,6 @@ class TestCachingBehavior:
         _probe_file_cached.cache_clear()
 
         converter = FFmpegConverter()
-        info_before = _probe_file_cached.cache_info()
-        total_before = info_before.hits + info_before.misses
 
         # First probe
         result1 = converter.probe_file(meditations_single_chapter)
@@ -623,6 +621,149 @@ class TestErrorScenarios:
         # probe_file stats the file for mtime first, so FileNotFoundError
         with pytest.raises(FileNotFoundError):
             converter.probe_file(Path("/nonexistent/file.mp3"))
+
+
+class TestParallelProcessing:
+    """Test thread safety of parallel audiobook processing."""
+
+    def test_parallel_ffmpeg_calls_are_safe(self, meditations_few_chapters, temp_output_dir):
+        """Verify multiple FFmpeg conversions can run concurrently."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        converter = FFmpegConverter()
+
+        def convert_one(idx: int, source_path: Path) -> tuple[int, Path, bool]:
+            """Convert a single file in a thread."""
+            output = temp_output_dir / f"parallel_test_{idx}.m4b"
+            audio_file = AudioFile(
+                path=source_path,
+                format=AudioFormat.MP3,
+                duration_ms=converter.probe_duration(source_path),
+            )
+            result_path, was_remuxed = converter.convert_to_m4b(
+                source_files=[audio_file],
+                output_path=output,
+                bitrate=48,
+                mono=True,
+            )
+            return idx, result_path, result_path.exists()
+
+        # Run 3 conversions in parallel
+        results = []
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = {executor.submit(convert_one, i, path): i for i, path in enumerate(meditations_few_chapters)}
+            for future in as_completed(futures):
+                results.append(future.result())
+
+        # All should succeed
+        assert len(results) == 3
+        for idx, path, exists in results:
+            assert exists, f"Output {idx} should exist"
+            # Verify output is valid
+            probe = converter.probe_file(path)
+            assert probe["format"]["format_name"] == "mov,mp4,m4a,3gp,3g2,mj2"
+
+    def test_parallel_probing_is_thread_safe(self, meditations_few_chapters):
+        """Verify ffprobe caching works correctly under concurrent access."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        from audiobook_optimizer.adapters.ffmpeg import _probe_file_cached
+
+        _probe_file_cached.cache_clear()
+        converter = FFmpegConverter()
+
+        def probe_file(path: Path) -> dict:
+            """Probe a file in a thread."""
+            return converter.probe_file(path)
+
+        # Probe all files multiple times concurrently
+        all_paths = meditations_few_chapters * 3  # 9 probes total, 3 unique files
+        results = []
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(probe_file, p) for p in all_paths]
+            for future in as_completed(futures):
+                results.append(future.result())
+
+        # All probes should succeed
+        assert len(results) == 9
+
+        # Cache should show hits (each file probed 3x, so 6 hits expected)
+        info = _probe_file_cached.cache_info()
+        assert info.hits >= 6, f"Expected at least 6 cache hits, got {info.hits}"
+
+    def test_processor_parallel_via_batch(self, meditations_few_chapters, temp_output_dir, tmp_path):
+        """Test processor.process_batch simulates parallel-like behavior."""
+        import shutil
+
+        # Set up multiple audiobook directories
+        source_dir = tmp_path / "source"
+        source_dir.mkdir()
+
+        for i, chapter in enumerate(meditations_few_chapters):
+            book_dir = source_dir / f"Audiobook {i + 1}"
+            book_dir.mkdir()
+            shutil.copy(chapter, book_dir / "chapter.mp3")
+
+        processor = AudiobookProcessor(
+            source_dir=source_dir,
+            output_dir=temp_output_dir,
+            bitrate=48,
+            mono=True,
+        )
+
+        sources = processor.scan()
+        assert len(sources) == 3
+
+        # Process all at once (sequential but tests the batch interface)
+        results = processor.process_batch(sources)
+
+        assert len(results) == 3
+        assert all(r.status == ProcessingStatus.COMPLETED for r in results)
+        assert all(r.output_path and r.output_path.exists() for r in results)
+
+    def test_parallel_processing_handles_failures(self, meditations_single_chapter, temp_output_dir):
+        """Verify parallel processing handles mixed success/failure gracefully."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        converter = FFmpegConverter()
+
+        def process_task(task_id: int) -> tuple[int, bool, str]:
+            """Process a task that may succeed or fail."""
+            if task_id == 1:
+                # This one will fail - nonexistent file
+                try:
+                    converter.probe_file(Path("/nonexistent/fail.mp3"))
+                    return task_id, True, "unexpected success"
+                except FileNotFoundError:
+                    return task_id, False, "file not found"
+            else:
+                # These succeed
+                output = temp_output_dir / f"task_{task_id}.m4b"
+                audio_file = AudioFile(
+                    path=meditations_single_chapter,
+                    format=AudioFormat.MP3,
+                    duration_ms=60000,
+                )
+                converter.convert_to_m4b(
+                    source_files=[audio_file],
+                    output_path=output,
+                    bitrate=48,
+                    mono=True,
+                )
+                return task_id, True, "success"
+
+        results = {}
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = {executor.submit(process_task, i): i for i in range(3)}
+            for future in as_completed(futures):
+                task_id, success, msg = future.result()
+                results[task_id] = (success, msg)
+
+        # Task 1 should fail, others succeed
+        assert results[0][0] is True
+        assert results[1][0] is False
+        assert results[2][0] is True
 
 
 class TestMetadataTaggingComplete:

@@ -1,0 +1,9 @@
+.git
+.venv
+.ruff_cache
+.pytest_cache
+__pycache__
+tests/
+.env
+CLAUDE.md
+ROADMAP.md

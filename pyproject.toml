@@ -1,9 +1,30 @@
 [project]
 name = "audiobook-optimizer"
 version = "0.1.0"
-description = "Audiobook processing: scan, validate metadata, convert to M4B, organize"
+description = "Convert scattered audiobook files (MP3, M4A, FLAC) into organized M4B audiobooks with chapters and metadata"
 readme = "README.md"
+license = "WTFPL"
 requires-python = ">=3.13"
+keywords = [
+    "audiobook",
+    "m4b",
+    "ffmpeg",
+    "audio",
+    "converter",
+    "metadata",
+    "chapters",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: Public Domain",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Conversion",
+    "Typing :: Typed",
+]
 dependencies = [
     "pydantic>=2.10",
     "pydantic-settings>=2.7",
@@ -15,6 +36,16 @@ dependencies = [
     "cachekit>=0.3.0",
     "pyarrow>=22.0.0",
 ]
+
+[project.optional-dependencies]
+ai = [
+    "anthropic>=0.40",
+]
+
+[project.urls]
+Homepage = "https://github.com/27bslash6/audiobook-optimizer"
+Repository = "https://github.com/27bslash6/audiobook-optimizer"
+Issues = "https://github.com/27bslash6/audiobook-optimizer/issues"
 
 [project.scripts]
 audiobook-optimizer = "audiobook_optimizer.cli:app"
