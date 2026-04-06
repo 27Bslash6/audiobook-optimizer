@@ -7,6 +7,12 @@ OUTPUT_DIR="${OUTPUT_DIR:-/data/media/books/audiobooks}"
 STABILITY_SECONDS="${STABILITY_SECONDS:-300}"
 BITRATE="${BITRATE:-64}"
 WORKERS="${WORKERS:-1}"
+STALE_MINUTES="${STALE_MINUTES:-60}"
+
+# Audiobookshelf scan trigger (all three required to enable)
+ABS_URL="${ABS_URL:-}"
+ABS_API_KEY="${ABS_API_KEY:-}"
+ABS_LIBRARY_ID="${ABS_LIBRARY_ID:-}"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
@@ -22,16 +28,28 @@ mkdir -p "$OUTPUT_DIR"
 PROCESSED=0
 FAILED=0
 SKIPPED=0
+RECOVERED=0
 
 for dir in "$STAGING_DIR"/*/; do
     [ -d "$dir" ] || continue
 
     book_name="$(basename "$dir")"
 
-    # Skip if already processing (stale from killed CronJob)
+    # Skip already processed (silent -- these accumulate)
+    if [ -f "$dir/.processed" ]; then
+        continue
+    fi
+
+    # Auto-recover stale .processing from killed CronJobs
     if [ -f "$dir/.processing" ]; then
-        log "SKIP $book_name (already processing -- stale?)"
-        SKIPPED=$((SKIPPED + 1))
+        if [ "$(find "$dir/.processing" -mmin "+${STALE_MINUTES}" 2>/dev/null)" ]; then
+            log "RECOVER $book_name (stale .processing after ${STALE_MINUTES}min, resetting)"
+            mv "$dir/.processing" "$dir/.complete"
+            RECOVERED=$((RECOVERED + 1))
+        else
+            log "SKIP $book_name (processing in progress)"
+            SKIPPED=$((SKIPPED + 1))
+        fi
         continue
     fi
 
@@ -67,7 +85,7 @@ for dir in "$STAGING_DIR"/*/; do
     if audiobook-optimizer process "$dir" "$OUTPUT_DIR" \
         --bitrate "$BITRATE" --workers "$WORKERS" 2>&1; then
         log "SUCCESS $book_name"
-        rm -rf "$dir"
+        touch "$dir/.processed"
         PROCESSED=$((PROCESSED + 1))
     else
         EXIT_CODE=$?
@@ -77,8 +95,20 @@ for dir in "$STAGING_DIR"/*/; do
     fi
 done
 
-if [ $PROCESSED -eq 0 ] && [ $FAILED -eq 0 ] && [ $SKIPPED -eq 0 ]; then
+if [ $PROCESSED -eq 0 ] && [ $FAILED -eq 0 ] && [ $SKIPPED -eq 0 ] && [ $RECOVERED -eq 0 ]; then
     log "No audiobooks ready for processing."
 else
-    log "Summary: processed=$PROCESSED failed=$FAILED skipped=$SKIPPED"
+    log "Summary: processed=$PROCESSED failed=$FAILED skipped=$SKIPPED recovered=$RECOVERED"
+fi
+
+# Trigger Audiobookshelf library scan after successful processing
+if [ "$PROCESSED" -gt 0 ] && [ -n "$ABS_URL" ] && [ -n "$ABS_API_KEY" ] && [ -n "$ABS_LIBRARY_ID" ]; then
+    log "Triggering Audiobookshelf library scan..."
+    if curl -sf -X POST \
+        -H "Authorization: Bearer $ABS_API_KEY" \
+        "${ABS_URL}/api/libraries/${ABS_LIBRARY_ID}/scan" >/dev/null 2>&1; then
+        log "ABS scan triggered"
+    else
+        log "WARN: ABS scan trigger failed (non-fatal)"
+    fi
 fi
