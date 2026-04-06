@@ -86,7 +86,7 @@ class AudioQualityAdvisor:
     - Quality concerns
     """
 
-    def __init__(self, model: str = "anthropic:claude-3-5-haiku-latest"):
+    def __init__(self, model: str = "anthropic:claude-haiku-4-5"):
         """Initialize advisor with specified model.
 
         Args:

@@ -122,7 +122,7 @@ Omit audiobooks that are already correct."""
 class BatchAIVerifier:
     """Batch verify audiobook metadata and quality decisions using AI."""
 
-    def __init__(self, model: str = "anthropic:claude-3-5-haiku-latest"):
+    def __init__(self, model: str = "anthropic:claude-haiku-4-5"):
         """Initialize verifier.
 
         Raises:
