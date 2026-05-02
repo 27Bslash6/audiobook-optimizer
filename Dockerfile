@@ -19,7 +19,8 @@ RUN apt-get update \
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/src /app/src
 COPY scripts/process-staging.sh /usr/local/bin/process-staging
-RUN chmod +x /usr/local/bin/process-staging
+COPY scripts/on-download-complete.sh /usr/local/bin/on-download-complete
+RUN chmod +x /usr/local/bin/process-staging /usr/local/bin/on-download-complete
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1

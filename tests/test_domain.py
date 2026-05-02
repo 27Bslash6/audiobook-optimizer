@@ -7,6 +7,7 @@ from audiobook_optimizer.adapters.filesystem import (
     SERIES_PATTERNS,
     SKIP_PATTERNS,
     FilesystemMetadataExtractor,
+    FilesystemScanner,
 )
 from audiobook_optimizer.domain.models import (
     AudiobookMetadata,
@@ -227,3 +228,112 @@ class TestSkipPatterns:
     def test_skip_patterns_dont_match_audiobooks(self, name: str):
         matched = any(p.search(name) for p in SKIP_PATTERNS)
         assert not matched, f"Should NOT skip: {name}"
+
+
+class TestShouldSkipOverride:
+    """Test that 'audiobook' in folder name overrides skip patterns."""
+
+    @pytest.fixture
+    def scanner(self):
+        return FilesystemScanner()
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Thinking, Fast and Slow [Audiobook + ePub] by Daniel Kahneman",
+            "Title AUDIOBOOK (MP3) 2003",
+            "[Audiobook] Some EPUB Collection",
+            "Some Great audiobook OST included",
+        ],
+    )
+    def test_audiobook_in_name_overrides_skip(self, scanner, tmp_path, name: str):
+        d = tmp_path / name
+        d.mkdir()
+        assert not scanner._should_skip(d), f"Should NOT skip: {name}"
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Some EPUB Collection",
+            "Album OST Soundtrack",
+            "N64 Emulator ROMs",
+        ],
+    )
+    def test_skip_still_works_without_audiobook(self, scanner, tmp_path, name: str):
+        d = tmp_path / name
+        d.mkdir()
+        assert scanner._should_skip(d), f"Should skip: {name}"
+
+
+class TestDiscSetDetection:
+    """Test disc/CD subdirectory merging."""
+
+    @pytest.fixture
+    def scanner(self):
+        return FilesystemScanner()
+
+    def _make_disc_tree(self, tmp_path, disc_names, files_per_disc=3):
+        """Helper to create a directory tree with disc subdirs and audio files."""
+        for disc_name in disc_names:
+            disc_dir = tmp_path / disc_name
+            disc_dir.mkdir()
+            for i in range(files_per_disc):
+                (disc_dir / f"track_{i:02d}.mp3").write_bytes(b"\x00" * 100)
+
+    def test_disc_subdirs_detected_as_audiobook(self, scanner, tmp_path):
+        book_dir = tmp_path / "Author - Title"
+        book_dir.mkdir()
+        self._make_disc_tree(book_dir, ["Disc 1", "Disc 2", "Disc 3"])
+
+        assert scanner.is_audiobook_directory(book_dir)
+
+    def test_cd_subdirs_detected(self, scanner, tmp_path):
+        book_dir = tmp_path / "Book Name"
+        book_dir.mkdir()
+        self._make_disc_tree(book_dir, ["CD 1", "CD 2"])
+
+        assert scanner.is_audiobook_directory(book_dir)
+
+    def test_part_subdirs_detected(self, scanner, tmp_path):
+        book_dir = tmp_path / "Book Name"
+        book_dir.mkdir()
+        self._make_disc_tree(book_dir, ["Part 1", "Part 2", "Part 3"])
+
+        assert scanner.is_audiobook_directory(book_dir)
+
+    def test_single_disc_not_detected_as_set(self, scanner, tmp_path):
+        book_dir = tmp_path / "Book Name"
+        book_dir.mkdir()
+        self._make_disc_tree(book_dir, ["Disc 1"])
+
+        assert not scanner.is_audiobook_directory(book_dir)
+
+    def test_non_disc_subdirs_not_merged(self, scanner, tmp_path):
+        """Subdirs without disc pattern should NOT be treated as disc set."""
+        book_dir = tmp_path / "Collection"
+        book_dir.mkdir()
+        self._make_disc_tree(book_dir, ["Book One", "Book Two"])
+
+        assert not scanner.is_audiobook_directory(book_dir)
+
+    def test_disc_set_scan_yields_single_source(self, scanner, tmp_path):
+        """Scanning a disc-set directory should yield one AudiobookSource with all files."""
+        book_dir = tmp_path / "Author - Title"
+        book_dir.mkdir()
+        self._make_disc_tree(book_dir, ["Disc 1", "Disc 2"], files_per_disc=3)
+
+        sources = list(scanner.scan_directory(book_dir))
+        assert len(sources) == 1
+        assert len(sources[0].audio_files) == 6  # 3 files × 2 discs
+
+    def test_disc_set_files_are_sorted(self, scanner, tmp_path):
+        """Files from disc set should be in disc order."""
+        book_dir = tmp_path / "Author - Title"
+        book_dir.mkdir()
+        self._make_disc_tree(book_dir, ["Disc 2", "Disc 1"], files_per_disc=2)
+
+        sources = list(scanner.scan_directory(book_dir))
+        paths = [f.path for f in sources[0].audio_files]
+        # Disc 1 files should come before Disc 2 files
+        assert "Disc 1" in str(paths[0])
+        assert "Disc 2" in str(paths[-1])

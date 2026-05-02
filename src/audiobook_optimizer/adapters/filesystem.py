@@ -36,6 +36,9 @@ SERIES_PATTERNS = [
     re.compile(r"^(?:Book|Vol\.?|Volume)\s*(?P<num>\d+(?:\.\d+)?)\s*[-–:]\s*(?P<title>.+)$", re.IGNORECASE),
 ]
 
+# Disc/CD subdirectory patterns (for multi-disc audiobooks)
+DISC_PATTERN = re.compile(r"\b(?:Disc|Disk|CD|Part)\s*\d+\b", re.IGNORECASE)
+
 AUTHOR_PATTERNS = [
     # "Author - Title"
     re.compile(r"^(?P<author>[^-]+?)\s*[-–]\s*(?P<title>.+)$"),
@@ -113,82 +116,50 @@ class FilesystemScanner(AudioScanner):
     def _should_skip(self, path: Path) -> bool:
         """Check if directory should be skipped (not audiobook content)."""
         name = path.name
+        # "Audiobook" in the name is a strong positive signal — never skip.
+        # Handles folders like "Title [Audiobook + ePub] by Author"
+        if re.search(r"\baudiobook\b", name, re.IGNORECASE):
+            return False
         return any(pattern.search(name) for pattern in SKIP_PATTERNS)
 
     def is_audiobook_directory(self, path: Path) -> bool:
         """Check if directory contains audiobook content.
 
-        Simple, robust logic: a directory is an audiobook if it has audio files directly
-        and doesn't have subdirectories that also contain audiobooks.
+        A directory is an audiobook if:
+        1. It has audio files directly and no subdirs with competing audio, OR
+        2. It has no direct audio but its subdirs form a disc set (Disc 1/, Disc 2/, etc.)
         """
         if not path.is_dir():
             return False
 
-        # Skip directories that match exclusion patterns
         if self._should_skip(path):
             return False
 
-        # Count audio files directly in this directory (non-recursive)
         direct_audio_files = list(self._iter_audio_files(path, recursive=False))
+        child_dirs = [
+            c for c in sorted(path.iterdir()) if c.is_dir() and not c.name.startswith(".") and not self._should_skip(c)
+        ]
+        subdirs_with_audio = [d for d in child_dirs if any(self._iter_audio_files(d, recursive=False))]
 
-        # Must have minimum audio files directly
-        if len(direct_audio_files) < self.min_files:
-            return False
-
-        # Check if any subdirectories also contain audiobooks
-        # If so, this is likely a collection directory, not an audiobook itself
-        # BUT: we'll still process the files here as standalone audiobooks in the scan_directory logic
-        for item in path.iterdir():
-            if item.is_dir() and not item.name.startswith("."):
-                if not self._should_skip(item):
-                    sub_audio = list(self._iter_audio_files(item, recursive=False))
-                    if len(sub_audio) >= self.min_files:
-                        # Subdirectory has audiobook content, so this is a collection directory
-                        # Return False so scan_directory will recurse into subdirs
-                        # But the audio files in this directory will be processed as standalone files
-                        return False
-
-        # Has audio files directly and no competing subdirectories = audiobook
-        return True
-
-        # Skip directories that match exclusion patterns
-        if self._should_skip(path):
-            return False
-
-        # Count audio files directly in this directory (non-recursive)
-        direct_audio_files = list(self._iter_audio_files(path, recursive=False))
-
-        # Primary criterion: directory with enough audio files directly
         if len(direct_audio_files) >= self.min_files:
-            return True
+            # Has direct audio — it's an audiobook unless subdirs have competing audio
+            if not subdirs_with_audio:
+                return True
+            # Subdirs with audio = collection directory (scan_directory will recurse)
+            return False
 
-        # Check for audiobook indicators in folder name
-        indicators = ["audiobook", "audio book", "narrated", "unabridged", "abridged"]
-        folder_lower = path.name.lower()
-
-        if any(ind in folder_lower for ind in indicators):
-            # For directories with audiobook-related names, ensure they're not collection directories
-            # A collection directory has subdirectories that contain audio files
-            subdirs_with_audio = 0
-            total_subdirs = 0
-
-            for item in path.iterdir():
-                if item.is_dir() and not item.name.startswith("."):
-                    total_subdirs += 1
-                    # Quick check: does this subdirectory have audio files?
-                    sub_audio = list(self._iter_audio_files(item, recursive=False))
-                    if len(sub_audio) >= self.min_files:
-                        subdirs_with_audio += 1
-
-            # If multiple subdirectories contain audiobooks, this is likely a collection
-            # If this directory has NO direct audio files but has subdirs with audio, it's a collection
-            if subdirs_with_audio > 0 and len(direct_audio_files) == 0:
-                return False
-
-            # If it has audiobook-related name and no conflicting subdirs, treat as audiobook
+        # No direct audio — check if subdirs form a disc set
+        if self._is_disc_set(subdirs_with_audio):
             return True
 
         return False
+
+    def _is_disc_set(self, dirs: list[Path]) -> bool:
+        """Check if directories form a disc/CD set that should be merged."""
+        if len(dirs) < 2:
+            return False
+        disc_matches = sum(1 for d in dirs if DISC_PATTERN.search(d.name))
+        return disc_matches >= 2 and disc_matches == len(dirs)
 
     def _iter_audio_files(self, path: Path, recursive: bool = True) -> Iterator[Path]:
         """Iterate over audio files in directory."""

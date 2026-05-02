@@ -14,7 +14,21 @@ ABS_URL="${ABS_URL:-}"
 ABS_API_KEY="${ABS_API_KEY:-}"
 ABS_LIBRARY_ID="${ABS_LIBRARY_ID:-}"
 
+# ntfy push notifications
+NTFY_URL="${NTFY_URL:-}"
+NTFY_TOPIC="${NTFY_TOPIC:-downloads}"
+
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
+
+notify() {
+    # Usage: notify "title" "message" "priority" "tags"
+    [ -z "$NTFY_URL" ] && return
+    curl -sf -X POST "$NTFY_URL/$NTFY_TOPIC" \
+        -H "Title: $1" \
+        -H "Priority: ${3:-default}" \
+        -H "Tags: ${4:-books}" \
+        -d "$2" >/dev/null 2>&1 || true
+}
 
 # Exit early if staging dir doesn't exist or is empty
 if [ ! -d "$STAGING_DIR" ]; then
@@ -37,6 +51,11 @@ for dir in "$STAGING_DIR"/*/; do
 
     # Skip already processed (silent -- these accumulate)
     if [ -f "$dir/.processed" ]; then
+        continue
+    fi
+
+    # Skip explicitly excluded
+    if [ -f "$dir/.skip" ]; then
         continue
     fi
 
@@ -87,11 +106,13 @@ for dir in "$STAGING_DIR"/*/; do
         log "SUCCESS $book_name"
         touch "$dir/.processed"
         PROCESSED=$((PROCESSED + 1))
+        notify "Audiobook ready" "$book_name" "default" "books,white_check_mark"
     else
         EXIT_CODE=$?
         log "FAILED $book_name (exit code $EXIT_CODE)"
         mv "$dir/.processing" "$dir/.failed"
         FAILED=$((FAILED + 1))
+        notify "Audiobook failed" "$book_name (exit $EXIT_CODE)" "high" "books,warning"
     fi
 done
 
