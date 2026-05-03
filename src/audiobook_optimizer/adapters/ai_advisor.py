@@ -7,18 +7,11 @@ Requires ANTHROPIC_API_KEY environment variable (or .env file).
 import os
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
 
-from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
 from audiobook_optimizer.domain.models import AudiobookSource
-
-# Load .env from project root if it exists
-_env_file = Path(__file__).parent.parent.parent.parent / ".env"
-if _env_file.exists():
-    load_dotenv(_env_file)
 
 
 class AdvisorError(Exception):

@@ -768,5 +768,162 @@ def verify(
     print_cache_debug()
 
 
+@app.command()
+def tidy(
+    apply: bool = typer.Option(
+        False,
+        "--apply/--dry-run",
+        help="Apply changes to ABS (default: dry-run, shows diff only)",
+    ),
+    match: bool = typer.Option(
+        False,
+        "--match",
+        help="Trigger Audible matching for items missing descriptions",
+    ),
+    match_authors: bool = typer.Option(
+        False,
+        "--match-authors",
+        help="Fetch author bios and images from Audible",
+    ),
+    remove_duplicates: bool = typer.Option(
+        False,
+        "--remove-duplicates",
+        help="Detect and remove duplicate library items",
+    ),
+) -> None:
+    """Tidy Audiobookshelf library metadata using folder-name inference."""
+    import time
+
+    from audiobook_optimizer.adapters.abs_client import ABSApiError, ABSClient
+    from audiobook_optimizer.config import abs_configured, get_abs_settings
+    from audiobook_optimizer.services.tidy import (
+        analyze_library,
+        apply_updates,
+        find_duplicates,
+    )
+    from audiobook_optimizer.services.tidy import (
+        remove_duplicates as svc_remove_dupes,
+    )
+
+    if not abs_configured():
+        console.print("[red]ABS not configured. Set ABS_URL, ABS_API_KEY, ABS_LIBRARY_ID.[/red]")
+        raise typer.Exit(1)
+
+    settings = get_abs_settings()
+    assert settings.abs_url and settings.abs_api_key and settings.abs_library_id
+    client = ABSClient(
+        url=settings.abs_url,
+        api_key=settings.abs_api_key.get_secret_value(),
+        library_id=settings.abs_library_id,
+    )
+
+    try:
+        # Fetch library items
+        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
+            progress.add_task("Fetching library items...", total=None)
+            items = client.get_items()
+
+        active = [i for i in items if not i.is_missing]
+        missing = len(items) - len(active)
+        console.print(
+            f"Found [cyan]{len(items)}[/cyan] library items" + (f" [dim](skipping {missing} missing)[/dim]" if missing else "")
+        )
+
+        # Analyze metadata
+        result = analyze_library(active)
+
+        # Display diff table
+        if result.changes:
+            table = Table(title=f"Metadata Changes ({len(result.updates)} items)")
+            table.add_column("#", style="dim", width=3)
+            table.add_column("Item", style="cyan", max_width=45)
+            table.add_column("Field", style="bold", width=10)
+            table.add_column("Current", style="red", max_width=35)
+            table.add_column("Proposed", style="green", max_width=35)
+
+            for i, change in enumerate(result.changes, 1):
+                table.add_row(str(i), change.item.rel_path[:45], change.field, str(change.current or "(none)"), change.proposed)
+
+            console.print(table)
+        else:
+            console.print("[green]No metadata changes needed.[/green]")
+
+        # Apply updates
+        if result.updates and apply:
+            console.print(f"\nApplying {len(result.updates)} updates...")
+            count = apply_updates(client, result.updates)
+            console.print(f"[green]Updated {count} items[/green]")
+            client.scan_library()
+            console.print("[dim]Library scan triggered[/dim]")
+        elif result.updates and not apply:
+            console.print(f"\n[yellow]Dry run: {len(result.updates)} items would be updated. Use --apply to commit.[/yellow]")
+
+        # Remove duplicates
+        if remove_duplicates:
+            dupes = find_duplicates(active)
+            if not dupes:
+                console.print("\n[green]No duplicates found.[/green]")
+            else:
+                console.print(f"\n[yellow]Found {len(dupes)} duplicate groups:[/yellow]")
+                for (title, _), group in dupes.items():
+                    console.print(f"  [bold]{title}[/bold] ({len(group)} copies)")
+                    for i, item in enumerate(group):
+                        marker = "[green]keep[/green]" if i == 0 else "[red]delete[/red]"
+                        console.print(f"    {marker} {item.id[:8]}... {item.rel_path}")
+                if apply:
+                    deleted = svc_remove_dupes(client, dupes)
+                    console.print(f"[green]Removed {len(deleted)} duplicates[/green]")
+                else:
+                    to_delete = sum(len(g) - 1 for g in dupes.values())
+                    console.print(f"\n[yellow]Dry run: {to_delete} duplicates would be removed. Use --apply.[/yellow]")
+
+        # Match items (Audible metadata)
+        if match:
+            unmatched = [i for i in active if not i.description]
+            if not unmatched:
+                console.print("\n[green]All items have descriptions.[/green]")
+            else:
+                console.print(f"\nMatching {len(unmatched)} items without descriptions...")
+                matched_count = 0
+                for item in unmatched:
+                    try:
+                        if client.match_item(item.id):
+                            matched_count += 1
+                            console.print(f"  [green]✓[/green] {item.title}")
+                        else:
+                            console.print(f"  [dim]- {item.title} (no match)[/dim]")
+                    except ABSApiError:
+                        console.print(f"  [red]✗ {item.title}[/red]")
+                    time.sleep(1)
+                console.print(f"[green]Matched {matched_count}/{len(unmatched)} items[/green]")
+
+        # Match authors
+        if match_authors:
+            with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
+                progress.add_task("Fetching authors...", total=None)
+                authors = client.get_authors()
+
+            unmatched_authors = [a for a in authors if not a.description or not a.has_image]
+            if not unmatched_authors:
+                console.print("\n[green]All authors have bios and images.[/green]")
+            else:
+                console.print(f"\nMatching {len(unmatched_authors)} authors missing bios/images...")
+                matched_count = 0
+                for author in unmatched_authors:
+                    try:
+                        if client.match_author(author.id, author.name):
+                            matched_count += 1
+                            console.print(f"  [green]✓[/green] {author.name}")
+                        else:
+                            console.print(f"  [dim]- {author.name} (no match)[/dim]")
+                    except ABSApiError:
+                        console.print(f"  [red]✗ {author.name}[/red]")
+                    time.sleep(1)
+                console.print(f"[green]Matched {matched_count}/{len(unmatched_authors)} authors[/green]")
+
+    finally:
+        client.close()
+
+
 if __name__ == "__main__":
     app()

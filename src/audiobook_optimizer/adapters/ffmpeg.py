@@ -194,7 +194,7 @@ class FFmpegConverter(AudioConverter):
                 if ch.end_ms is not None:
                     f.write(f"END={ch.end_ms}\n")
                 # Escape special chars in title
-                title = ch.title.replace("=", "\\=").replace(";", "\\;").replace("#", "\\#").replace("\\", "\\\\")
+                title = ch.title.replace("\\", "\\\\").replace("=", "\\=").replace(";", "\\;").replace("#", "\\#")
                 f.write(f"title={title}\n")
 
         try:

@@ -19,6 +19,20 @@ class AISettings(BaseSettings):
     anthropic_api_key: SecretStr | None = None
 
 
+class ABSSettings(BaseSettings):
+    """Audiobookshelf connection settings."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    abs_url: str | None = None
+    abs_api_key: SecretStr | None = None
+    abs_library_id: str | None = None
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment."""
 
@@ -41,6 +55,7 @@ class Settings(BaseSettings):
     # AI settings
     ai_enabled: bool | None = None  # None = auto-detect from API key
     ai_backend: Literal["api", "cli"] = "api"  # "api" uses PydanticAI, "cli" uses claude CLI
+    ai_model: str = "anthropic:claude-haiku-4-5"  # PydanticAI model string, litellm-compatible
 
     # Cache: cachekit auto-detects from CACHEKIT_REDIS_URL env var
     # Set CACHEKIT_REDIS_URL=redis://localhost:6379 for L2 cache, otherwise L1 only
@@ -65,6 +80,18 @@ def get_ai_settings() -> AISettings:
     return AISettings()
 
 
+@lru_cache
+def get_abs_settings() -> ABSSettings:
+    """Get cached ABS settings instance."""
+    return ABSSettings()
+
+
 def ai_available() -> bool:
     """Check if AI features are available (API key present)."""
     return get_ai_settings().anthropic_api_key is not None
+
+
+def abs_configured() -> bool:
+    """Check if Audiobookshelf connection is configured."""
+    s = get_abs_settings()
+    return all([s.abs_url, s.abs_api_key, s.abs_library_id])

@@ -5,20 +5,12 @@ Uses deterministic results as baseline, AI validates/tweaks.
 Results are cached to avoid redundant API calls.
 """
 
-from pathlib import Path
-
 from cachekit import cache
-from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
-from audiobook_optimizer.config import ai_available
+from audiobook_optimizer.config import ai_available, get_settings
 from audiobook_optimizer.domain.models import AudiobookMetadata, AudiobookSource
-
-# Load .env from project root
-_env_file = Path(__file__).parent.parent.parent.parent / ".env"
-if _env_file.exists():
-    load_dotenv(_env_file)
 
 
 class AudiobookVerification(BaseModel):
@@ -122,7 +114,7 @@ Omit audiobooks that are already correct."""
 class BatchAIVerifier:
     """Batch verify audiobook metadata and quality decisions using AI."""
 
-    def __init__(self, model: str = "anthropic:claude-haiku-4-5"):
+    def __init__(self, model: str | None = None):
         """Initialize verifier.
 
         Raises:
@@ -130,7 +122,7 @@ class BatchAIVerifier:
         """
         if not ai_available():
             raise RuntimeError("ANTHROPIC_API_KEY required for AI verification")
-        self._model = model
+        self._model = model or get_settings().ai_model
 
     def verify_batch(
         self,

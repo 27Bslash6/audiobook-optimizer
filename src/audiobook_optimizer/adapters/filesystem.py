@@ -1,5 +1,6 @@
 """Filesystem adapter for scanning and organizing audiobooks."""
 
+import logging
 import re
 import shutil
 from collections.abc import Iterator
@@ -13,6 +14,8 @@ from audiobook_optimizer.domain.models import (
     Chapter,
 )
 from audiobook_optimizer.ports.interfaces import AudioScanner, FileOrganizer, MetadataExtractor
+
+logger = logging.getLogger(__name__)
 
 # Audio extensions we care about
 AUDIO_EXTENSIONS = {".mp3", ".m4a", ".m4b", ".flac", ".ogg", ".opus", ".wav"}
@@ -47,6 +50,108 @@ AUTHOR_PATTERNS = [
     # "Author, Name - Title" (for "Parenti, Michael" style)
     re.compile(r"^(?P<author>[A-Z][a-z]+,\s*[A-Z][a-z]+)\s*[-–]\s*(?P<title>.+)$"),
 ]
+
+# Parent folder names that are NOT author names
+_SKIP_PARENT_NAMES = {
+    "audiobooks",
+    "audiobook",
+    "books",
+    "audio",
+    "media",
+    "downloads",
+    "torrents",
+    "prowlarr",
+    "complete",
+    "incomplete",
+}
+
+
+def clean_name(name: str) -> str:
+    """Clean up common filename/folder patterns.
+
+    Module-level function for use by both FilesystemMetadataExtractor and
+    infer_metadata_from_relpath. Iteratively strips junk until stable.
+    """
+    prev = None
+    while prev != name:
+        prev = name
+        # Remove "by dessalines" or similar uploader tags at end
+        name = re.sub(r"\s+by\s+\w+$", "", name, flags=re.IGNORECASE)
+        # Remove audiobook indicators (suffix)
+        suffixes = [" Audiobook", " [audiobook]", " (Audiobook)", " - audiobook", " audiobook"]
+        for suffix in suffixes:
+            if name.lower().endswith(suffix.lower()):
+                name = name[: -len(suffix)]
+        # Remove [Audiobook ...] tags (prefix or inline)
+        name = re.sub(r"\[(?:[Aa]udiobook)[^\]]*\]\s*", "", name)
+        # Remove quality/format tags like "(Stevens) 32k 12.58.21 {179mb}"
+        name = re.sub(r"\s*\([^)]+\)\s*\d+k\s*[\d.]+\s*\{[^}]+\}$", "", name)
+        # Remove year prefix like "2008 - "
+        name = re.sub(r"^\d{4}\s*[-–]\s*", "", name)
+        # Remove "(Unabridged)" / "(Abridged)"
+        name = re.sub(r"\s*\((?:Un)?[Aa]bridged\)", "", name)
+        # Remove format indicators "(MP3)", "(M4B)", etc.
+        name = re.sub(r"\s*\((?:MP3|M4B|M4A|FLAC)\)", "", name, flags=re.IGNORECASE)
+        # Remove abbreviated series prefix like "DW38 - ", "HoO4 - " (2-4 letters + digits)
+        name = re.sub(r"^[A-Za-z]{2,4}\d+\s*[-–]\s*", "", name)
+    return name.strip()
+
+
+def check_author_name(name: str) -> str | None:
+    """Check if a string looks like an author name (2-4 capitalized words).
+
+    Returns the name if it looks like an author, None otherwise.
+    """
+    if name.lower() in _SKIP_PARENT_NAMES:
+        return None
+    words = name.split()
+    if 2 <= len(words) <= 4:
+        if all(w[0].isupper() and w.replace(".", "").replace("'", "").isalpha() for w in words):
+            return name
+    return None
+
+
+def infer_metadata_from_relpath(rel_path: str) -> AudiobookMetadata:
+    """Infer audiobook metadata from an ABS item's relPath string.
+
+    Parses folder name for title/series and parent folder for author.
+    No filesystem access needed — works purely on the path string.
+    """
+    parts = rel_path.replace("\\", "/").rstrip("/").split("/")
+    folder_name = parts[-1]
+    parent_name = parts[-2] if len(parts) >= 2 else None
+
+    folder_name = clean_name(folder_name)
+
+    parent_author = check_author_name(parent_name) if parent_name else None
+
+    # Try series patterns
+    for pattern in SERIES_PATTERNS:
+        match = pattern.match(folder_name)
+        if match:
+            groups = match.groupdict()
+            return AudiobookMetadata(
+                title=groups.get("title", folder_name).strip(),
+                author=parent_author or "Unknown Author",
+                series=groups.get("series", "").strip() or None,
+                series_number=float(groups["num"]) if "num" in groups else None,
+            )
+
+    # If we have a parent author, use full name as title
+    if parent_author:
+        return AudiobookMetadata(title=folder_name, author=parent_author)
+
+    # Try author patterns
+    for pattern in AUTHOR_PATTERNS:
+        match = pattern.match(folder_name)
+        if match:
+            groups = match.groupdict()
+            return AudiobookMetadata(
+                title=groups.get("title", folder_name).strip(),
+                author=groups.get("author", "Unknown Author").strip(),
+            )
+
+    return AudiobookMetadata(title=folder_name, author="Unknown Author")
 
 
 class FilesystemScanner(AudioScanner):
@@ -230,7 +335,7 @@ class FilesystemMetadataExtractor(MetadataExtractor):
                             # Handle "1/10" format
                             track_number = int(str(track).split("/")[0])
             except Exception:
-                pass  # Fall back to defaults
+                logger.warning("Failed to read metadata from %s", path, exc_info=True)
 
         return AudioFile(
             path=path,
@@ -285,7 +390,7 @@ class FilesystemMetadataExtractor(MetadataExtractor):
                 return audio.pictures[0].data
 
         except Exception:
-            pass
+            logger.debug("Failed to extract cover from %s", path, exc_info=True)
 
         return None
 
@@ -339,61 +444,15 @@ class FilesystemMetadataExtractor(MetadataExtractor):
         )
 
     def _infer_author_from_parent(self, source: AudiobookSource) -> str | None:
-        """Check if parent folder looks like an author name.
-
-        Handles structures like "Terry Pratchett/Discworld 01 - Title".
-        Returns author if parent looks like "FirstName LastName" pattern.
-        """
+        """Check if parent folder looks like an author name."""
         parent = source.source_path.parent
         if not parent or parent.name in (".", ""):
             return None
+        return check_author_name(parent.name)
 
-        parent_name = parent.name
-
-        # Skip common non-author parent folders
-        skip_names = {
-            "audiobooks",
-            "audiobook",
-            "books",
-            "audio",
-            "media",
-            "downloads",
-            "torrents",
-            "prowlarr",
-            "complete",
-            "incomplete",
-        }
-        if parent_name.lower() in skip_names:
-            return None
-
-        # Check if parent looks like "FirstName LastName" or "FirstName MiddleName LastName"
-        # Must be 2-4 capitalized words, no numbers, no special patterns
-        words = parent_name.split()
-        if 2 <= len(words) <= 4:
-            # All words should start with capital, be mostly letters
-            if all(w[0].isupper() and w.replace(".", "").replace("'", "").isalpha() for w in words):
-                return parent_name
-
-        return None
-
-    def _clean_name(self, name: str) -> str:
-        """Clean up common filename/folder patterns."""
-        # Iteratively clean until no more changes (handles nested patterns)
-        prev = None
-        while prev != name:
-            prev = name
-            # Remove "by dessalines" or similar uploader tags at end
-            name = re.sub(r"\s+by\s+\w+$", "", name, flags=re.IGNORECASE)
-            # Remove audiobook indicators
-            suffixes = [" Audiobook", " [audiobook]", " (Audiobook)", " - audiobook", " audiobook"]
-            for suffix in suffixes:
-                if name.lower().endswith(suffix.lower()):
-                    name = name[: -len(suffix)]
-            # Remove quality/format tags like "(Stevens) 32k 12.58.21 {179mb}"
-            name = re.sub(r"\s*\([^)]+\)\s*\d+k\s*[\d.]+\s*\{[^}]+\}$", "", name)
-            # Remove year prefix like "2008 - "
-            name = re.sub(r"^\d{4}\s*[-–]\s*", "", name)
-        return name.strip()
+    @staticmethod
+    def _clean_name(name: str) -> str:
+        return clean_name(name)
 
     def _infer_author_from_files(self, source: AudiobookSource) -> str | None:
         """Try to get author from embedded tags in audio files."""
@@ -408,6 +467,7 @@ class FilesystemMetadataExtractor(MetadataExtractor):
                     if author and author.lower() not in ["various", "unknown", "various artists"]:
                         return author
             except Exception:
+                logger.debug("Failed to read tags from %s", audio.path, exc_info=True)
                 continue
 
         return None
