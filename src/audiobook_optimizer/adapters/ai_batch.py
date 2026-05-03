@@ -89,13 +89,12 @@ def _verify_batch_cached(items: list[dict], model: str) -> list[dict]:
     Returns:
         List of verification dicts (serializable)
     """
-    # Add indices for prompt
-    for i, item in enumerate(items):
-        item["index"] = i
+    # Build indexed copies (don't mutate caller's dicts)
+    indexed_items = [{"index": i, **item} for i, item in enumerate(items)]
 
-    prompt = f"""Verify this batch of {len(items)} audiobooks:
+    prompt = f"""Verify this batch of {len(indexed_items)} audiobooks:
 
-{_format_items(items)}
+{_format_items(indexed_items)}
 
 Return verification results for any audiobooks that need corrections or have quality notes.
 Omit audiobooks that are already correct."""

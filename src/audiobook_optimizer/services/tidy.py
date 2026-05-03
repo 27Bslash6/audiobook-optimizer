@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from audiobook_optimizer.adapters.abs_client import ABSClient, ABSItem
+from audiobook_optimizer.adapters.abs_client import ABSApiError, ABSClient, ABSItem
 from audiobook_optimizer.adapters.filesystem import infer_metadata_from_relpath
 from audiobook_optimizer.domain.models import AudiobookMetadata
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -109,17 +112,28 @@ def find_duplicates(items: list[ABSItem]) -> dict[tuple, list[ABSItem]]:
 
 
 def apply_updates(client: ABSClient, updates: dict[str, dict]) -> int:
-    """Apply metadata patches to ABS. Returns count of updated items."""
+    """Apply metadata patches to ABS. Returns count of successfully updated items."""
+    succeeded = 0
     for item_id, meta in updates.items():
-        client.update_item(item_id, meta)
-    return len(updates)
+        try:
+            client.update_item(item_id, meta)
+            succeeded += 1
+        except ABSApiError:
+            logger.error("Failed to update item %s", item_id, exc_info=True)
+    return succeeded
 
 
 def remove_duplicates(client: ABSClient, duplicate_groups: dict[tuple, list[ABSItem]]) -> list[ABSItem]:
-    """Remove duplicate items, keeping the first in each group. Returns deleted items."""
+    """Remove duplicate items, keeping the best copy in each group. Returns deleted items."""
     deleted = []
     for group in duplicate_groups.values():
-        for item in group[1:]:  # Keep first, delete rest
+        # Keep the item with the most metadata (description, series, narrators)
+        sorted_group = sorted(
+            group,
+            key=lambda i: (bool(i.description), bool(i.series), len(i.narrators)),
+            reverse=True,
+        )
+        for item in sorted_group[1:]:
             client.delete_item(item.id)
             deleted.append(item)
     return deleted

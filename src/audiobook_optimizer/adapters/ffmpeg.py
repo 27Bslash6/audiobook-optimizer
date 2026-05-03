@@ -32,7 +32,7 @@ def _probe_file_cached(path_str: str, mtime: float, ffprobe_path: str) -> dict:
         "-show_chapters",
         path_str,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=60)
     return json.loads(result.stdout)
 
 
@@ -266,7 +266,8 @@ class FFmpegConverter(AudioConverter):
 
             cmd.extend(["-f", "ipod", str(output_path)])
 
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            # Timeout: 4 hours max (covers ~30h audiobooks at ~10x realtime)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=14400)
             if result.returncode != 0:
                 raise FFmpegError(f"ffmpeg failed: {result.stderr}")
 
@@ -329,7 +330,7 @@ class FFmpegConverter(AudioConverter):
             str(temp_output),
         ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         if result.returncode != 0:
             temp_output.unlink(missing_ok=True)
             raise FFmpegError(f"Failed to embed cover: {result.stderr}")

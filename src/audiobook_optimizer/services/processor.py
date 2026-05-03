@@ -1,5 +1,7 @@
 """Processing service that orchestrates audiobook conversion."""
 
+import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -105,42 +107,41 @@ class AudiobookProcessor(ProcessingPipeline):
             # Step 6: Convert to M4B (prefers remux if source is compatible AAC)
             source.status = ProcessingStatus.CONVERTING
             temp_dir = Path(tempfile.mkdtemp(prefix="audiobook_"))
-            temp_m4b = temp_dir / f"{source.metadata.folder_name}.m4b"
+            try:
+                temp_m4b = temp_dir / f"{source.metadata.folder_name}.m4b"
 
-            _, was_remuxed = self.converter.convert_to_m4b(
-                source_files=source.audio_files,
-                output_path=temp_m4b,
-                chapters=all_chapters if all_chapters else None,
-                bitrate=target_bitrate,
-                mono=target_mono,
-            )
-            result.was_remuxed = was_remuxed
+                _, was_remuxed = self.converter.convert_to_m4b(
+                    source_files=source.audio_files,
+                    output_path=temp_m4b,
+                    chapters=all_chapters if all_chapters else None,
+                    bitrate=target_bitrate,
+                    mono=target_mono,
+                )
+                result.was_remuxed = was_remuxed
 
-            # Step 6: Apply metadata tags
-            source.status = ProcessingStatus.TAGGING
-            self.tagger.apply_metadata(temp_m4b, source.metadata)
+                # Step 7: Apply metadata tags
+                source.status = ProcessingStatus.TAGGING
+                self.tagger.apply_metadata(temp_m4b, source.metadata)
 
-            # Step 7: Embed cover art if available
-            cover_data = self._get_cover(source)
-            if cover_data:
-                self.tagger.embed_cover(temp_m4b, cover_data)
+                # Step 8: Embed cover art if available
+                cover_data = self._get_cover(source)
+                if cover_data:
+                    self.tagger.embed_cover(temp_m4b, cover_data)
 
-            # Step 8: Organize to library
-            source.status = ProcessingStatus.ORGANIZING
-            final_path = self.organizer.organize(temp_m4b, source.metadata, self.output_dir)
+                # Step 9: Organize to library
+                source.status = ProcessingStatus.ORGANIZING
+                final_path = self.organizer.organize(temp_m4b, source.metadata, self.output_dir)
 
-            # Cleanup temp directory
-            temp_m4b.unlink(missing_ok=True)
-            temp_dir.rmdir()
+                # Success
+                result.output_path = final_path
+                result.status = ProcessingStatus.COMPLETED
+                result.duration_ms = self.converter.probe_duration(final_path)
+                result.chapters_preserved = len(all_chapters) if all_chapters else len(source.audio_files)
+                source.status = ProcessingStatus.COMPLETED
+            finally:
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
-            # Success
-            result.output_path = final_path
-            result.status = ProcessingStatus.COMPLETED
-            result.duration_ms = self.converter.probe_duration(final_path)
-            result.chapters_preserved = len(all_chapters) if all_chapters else len(source.audio_files)
-            source.status = ProcessingStatus.COMPLETED
-
-        except (FFmpegError, TaggerError, ValueError, OSError) as e:
+        except (FFmpegError, TaggerError, ValueError, OSError, subprocess.TimeoutExpired) as e:
             result.status = ProcessingStatus.FAILED
             result.error_message = str(e)
             source.status = ProcessingStatus.FAILED

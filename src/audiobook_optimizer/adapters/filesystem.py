@@ -45,8 +45,8 @@ DISC_PATTERN = re.compile(r"\b(?:Disc|Disk|CD|Part)\s*\d+\b", re.IGNORECASE)
 AUTHOR_PATTERNS = [
     # "Author - Title"
     re.compile(r"^(?P<author>[^-]+?)\s*[-–]\s*(?P<title>.+)$"),
-    # "Title by Author"
-    re.compile(r"^(?P<title>.+?)\s+by\s+(?P<author>.+)$", re.IGNORECASE),
+    # "Title by FirstName LastName" (author must be 2+ words starting with uppercase)
+    re.compile(r"^(?P<title>.+?)\s+by\s+(?P<author>[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)$"),
     # "Author, Name - Title" (for "Parenti, Michael" style)
     re.compile(r"^(?P<author>[A-Z][a-z]+,\s*[A-Z][a-z]+)\s*[-–]\s*(?P<title>.+)$"),
 ]
@@ -75,8 +75,8 @@ def clean_name(name: str) -> str:
     prev = None
     while prev != name:
         prev = name
-        # Remove "by dessalines" or similar uploader tags at end
-        name = re.sub(r"\s+by\s+\w+$", "", name, flags=re.IGNORECASE)
+        # Remove "by dessalines" or similar uploader tags at end (lowercase word only)
+        name = re.sub(r"\s+by\s+[a-z]\w*$", "", name)
         # Remove audiobook indicators (suffix)
         suffixes = [" Audiobook", " [audiobook]", " (Audiobook)", " - audiobook", " audiobook"]
         for suffix in suffixes:

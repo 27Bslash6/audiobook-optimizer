@@ -30,6 +30,17 @@ notify() {
         -d "$2" >/dev/null 2>&1 || true
 }
 
+# Graceful shutdown: revert .processing to .complete on SIGTERM/SIGINT
+CURRENT_PROCESSING=""
+cleanup() {
+    if [ -n "$CURRENT_PROCESSING" ] && [ -f "$CURRENT_PROCESSING/.processing" ]; then
+        log "INTERRUPTED: reverting $(basename "$CURRENT_PROCESSING") to .complete"
+        mv "$CURRENT_PROCESSING/.processing" "$CURRENT_PROCESSING/.complete"
+        notify "Audiobook interrupted" "$(basename "$CURRENT_PROCESSING") - job killed" "default" "books,hourglass"
+    fi
+}
+trap cleanup SIGTERM SIGINT
+
 # Exit early if staging dir doesn't exist or is empty
 if [ ! -d "$STAGING_DIR" ]; then
     log "Staging directory $STAGING_DIR does not exist. Nothing to do."
@@ -99,11 +110,13 @@ for dir in "$STAGING_DIR"/*/; do
 
     # Atomic state transition
     mv "$dir/.complete" "$dir/.processing"
+    CURRENT_PROCESSING="$dir"
 
     # Run audiobook-optimizer (AI auto-enables if ANTHROPIC_API_KEY is set)
     if audiobook-optimizer process "$dir" "$OUTPUT_DIR" \
         --bitrate "$BITRATE" --workers "$WORKERS" 2>&1; then
         log "SUCCESS $book_name"
+        rm -f "$dir/.processing"
         touch "$dir/.processed"
         PROCESSED=$((PROCESSED + 1))
         notify "Audiobook ready" "$book_name" "default" "books,white_check_mark"
@@ -114,6 +127,7 @@ for dir in "$STAGING_DIR"/*/; do
         FAILED=$((FAILED + 1))
         notify "Audiobook failed" "$book_name (exit $EXIT_CODE)" "high" "books,warning"
     fi
+    CURRENT_PROCESSING=""
 done
 
 if [ $PROCESSED -eq 0 ] && [ $FAILED -eq 0 ] && [ $SKIPPED -eq 0 ] && [ $RECOVERED -eq 0 ]; then
