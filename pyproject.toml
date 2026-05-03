@@ -35,6 +35,7 @@ dependencies = [
     "python-dotenv>=1.2.1",
     "cachekit>=0.3.0",
     "httpx>=0.27",
+    "pyarrow>=18.0",
 ]
 
 [project.optional-dependencies]
