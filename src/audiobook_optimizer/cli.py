@@ -1,5 +1,6 @@
 """CLI entry point for audiobook-optimizer."""
 
+import logging
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -13,6 +14,8 @@ from rich.table import Table
 from audiobook_optimizer.config import ai_available, get_settings
 from audiobook_optimizer.domain.models import ProcessingStatus
 from audiobook_optimizer.services.processor import AudiobookProcessor
+
+logger = logging.getLogger(__name__)
 
 app = typer.Typer(
     name="audiobook-optimizer",
@@ -316,9 +319,11 @@ def process(
     ),
 ) -> None:
     """Process audiobooks: convert to M4B and organize."""
-    # Show AI status
+    # Show AI status — explicit on/off so pod logs never leave it ambiguous.
     if state.ai_enabled:
         console.print("[dim]AI verification enabled[/dim]")
+    else:
+        console.print("[dim]AI verification skipped (no ANTHROPIC_API_KEY or --no-ai)[/dim]")
 
     processor = AudiobookProcessor(
         source_dir=source,
@@ -386,8 +391,18 @@ def process(
 
             if ai_corrections:
                 console.print(f"[dim]AI corrected {len(ai_corrections)} audiobook(s)[/dim]\n")
+            else:
+                # Visibly confirm the AI path executed, even when no changes were needed.
+                console.print("[dim]AI verified — no corrections needed[/dim]\n")
         except Exception as e:
-            console.print(f"[yellow]AI verification failed: {e}[/yellow]\n")
+            # Don't silently swallow — make failures unmistakable in `kubectl logs`.
+            # We keep the try/except so a gateway hiccup doesn't abort the CronJob;
+            # processing continues with the un-verified inferred metadata.
+            console.print(
+                f"[bold red]AI verification ERRORED[/bold red] "
+                f"({type(e).__name__}): {e} — continuing with un-verified metadata\n"
+            )
+            logger.exception("AI batch verification failed")
 
     if dry_run:
         _show_dry_run(processor, sources, output)

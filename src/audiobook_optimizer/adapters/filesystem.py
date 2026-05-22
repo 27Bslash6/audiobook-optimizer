@@ -454,6 +454,45 @@ class FilesystemMetadataExtractor(MetadataExtractor):
     def _clean_name(name: str) -> str:
         return clean_name(name)
 
+    def read_embedded_tags(self, source: AudiobookSource) -> dict[str, str | None]:
+        """Read the embedded audio tags from the first source file as a flat dict.
+
+        Returns keys: artist, albumartist, album, composer, date, comment, genre, title.
+        Values are None when unreadable/absent. Used to enrich the AI verification
+        prompt with the richest available source-of-truth tags. Reads only the first
+        file (representative — taggers usually copy the same series-level tags across
+        all tracks in a release).
+
+        Reuses the lazy `mutagen` import and `_get_tag` helper. Wrapped in try/except
+        so an unreadable file degrades to all-None instead of failing the run.
+        """
+        keys = ("artist", "albumartist", "album", "composer", "date", "comment", "genre", "title")
+        empty: dict[str, str | None] = {k: None for k in keys}
+        if not self._mutagen or not source.audio_files:
+            return empty
+        try:
+            f = self._mutagen.File(source.audio_files[0].path)
+            if not f or not getattr(f, "tags", None):
+                return empty
+            tags = f.tags
+            return {
+                "artist": self._get_tag(tags, ["TPE1", "artist", "\xa9ART"]),
+                "albumartist": self._get_tag(tags, ["TPE2", "albumartist", "aART"]),
+                "album": self._get_tag(tags, ["TALB", "album", "\xa9alb"]),
+                "composer": self._get_tag(tags, ["TCOM", "composer", "\xa9wrt"]),
+                "date": self._get_tag(tags, ["TDRC", "TYER", "date", "\xa9day"]),
+                "comment": self._get_tag(tags, ["COMM::eng", "COMM", "comment", "\xa9cmt"]),
+                "genre": self._get_tag(tags, ["TCON", "genre", "\xa9gen"]),
+                "title": self._get_tag(tags, ["TIT2", "title", "\xa9nam"]),
+            }
+        except Exception:
+            logger.debug(
+                "Failed to read embedded tags from %s",
+                source.audio_files[0].path,
+                exc_info=True,
+            )
+            return empty
+
     def _infer_author_from_files(self, source: AudiobookSource) -> str | None:
         """Try to get author from embedded tags in audio files."""
         if not self._mutagen or not source.audio_files:
