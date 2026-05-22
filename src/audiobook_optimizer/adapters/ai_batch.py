@@ -24,8 +24,7 @@ class AudiobookVerification(BaseModel):
     narrator: str | None = Field(
         default=None,
         description=(
-            "Narrator/reader name if confidently known. Often the embedded "
-            "`composer` tag — leave null when not confident."
+            "Narrator/reader name if confidently known. Often the embedded `composer` tag — leave null when not confident."
         ),
     )
     year: int | None = Field(
@@ -202,9 +201,7 @@ class BatchAIVerifier:
             tags = extractor.read_embedded_tags(source)
             # Prefer the AudiobookSource.total_duration_ms when populated; fall back
             # to summing individual files. Both are in milliseconds.
-            total_ms = source.total_duration_ms or sum(
-                f.duration_ms for f in source.audio_files if f.duration_ms
-            )
+            total_ms = source.total_duration_ms or sum(f.duration_ms for f in source.audio_files if f.duration_ms)
             total_hours = round(total_ms / 3_600_000, 1) if total_ms else None
             # Truncate long tag values (comment can be a multi-paragraph description)
             # to keep prompt size + cache key bounded.

@@ -54,9 +54,7 @@ class TestAudiobookVerificationModel:
     """The model has narrator/year fields, defaulting to None."""
 
     def test_has_narrator_and_year_fields(self):
-        v = AudiobookVerification(
-            index=0, title="t", author="a", narrator="Rob Inglis", year=1968
-        )
+        v = AudiobookVerification(index=0, title="t", author="a", narrator="Rob Inglis", year=1968)
         assert v.narrator == "Rob Inglis"
         assert v.year == 1968
 
