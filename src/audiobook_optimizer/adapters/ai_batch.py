@@ -21,6 +21,20 @@ class AudiobookVerification(BaseModel):
     author: str = Field(description="Corrected author (FirstName LastName format)")
     series: str | None = Field(default=None, description="Series name if part of a series")
     series_number: float | None = Field(default=None, description="Position in series")
+    narrator: str | None = Field(
+        default=None,
+        description=(
+            "Narrator/reader name if confidently known. Often the embedded `composer` tag — leave null when not confident."
+        ),
+    )
+    year: int | None = Field(
+        default=None,
+        description=(
+            "Original publication year (4-digit) if confidently known. The "
+            "embedded `date` tag is usually the recording year — leave null "
+            "when ambiguous."
+        ),
+    )
     quality_ok: bool = Field(default=True, description="Whether quality settings are acceptable")
     quality_note: str | None = Field(default=None, description="Note about quality if not ok")
     changes: list[str] = Field(default_factory=list, description="List of changes made")
@@ -34,18 +48,41 @@ class BatchVerificationResult(BaseModel):
 
 
 _INSTRUCTIONS = """You are an audiobook metadata expert. You will receive a batch of audiobooks
-with their inferred metadata and quality settings. Your job is to:
+with their inferred metadata, embedded source tags, and quality settings. Your job is to:
 
-1. VERIFY metadata is correct (title, author, series)
-2. FIX obvious errors (swapped author/title, missing series detection, typos)
+1. VERIFY metadata is correct (title, author, series, narrator, year)
+2. FIX obvious errors (swapped author/title, missing series detection, typos,
+   leading track numbers like "01" baked into titles, quality/size tags in titles)
 3. VALIDATE quality decisions (bitrate choices)
 
 METADATA RULES:
 - Author format: "FirstName LastName" (not "LastName, FirstName")
-- Series names: Clean (e.g., "Discworld" not "Discworld Series")
-- Remove quality tags from titles: "(Stevens) 32k", "{179mb}", etc.
-- Remove year prefixes unless part of actual title
-- Detect series from context (e.g., "Book 1", "Vol. 2", numbered titles)
+- Series names: clean and consistent ("Discworld", not "Discworld Series",
+  not "Discworld (Books)"). Use "The Hitchhiker's Guide to the Galaxy" (with
+  the leading "The" and the apostrophe) for that series, not "Hitchhikers...".
+- Remove quality/size tags ("(Stevens) 32k 12.58.21 {179mb}"), bitrate
+  ({179mb}, 64k), and disc/track prefixes from titles. Example:
+  "01Hitchhiker's Guide to the Galaxy (audiobook)" -> "The Hitchhiker's Guide to the Galaxy".
+- Remove year prefixes ("2008 - ...") unless that year is part of the actual title.
+- Detect series from context: numbered prefixes ("Book 1", "Vol. 2"),
+  parent directory names, and the embedded `album` tag (often holds the series
+  name when the book is part of one).
+
+USING EMBEDDED TAGS:
+- The embedded audio tags (artist, albumartist, album, composer, date,
+  comment, genre, title) are the richest signal — prefer them over folder-name
+  guesses when they are sane.
+- The embedded `composer` tag is FREQUENTLY the narrator — return it as
+  `narrator` when it is a plausible person name distinct from the author.
+- The embedded `date` tag is usually the (re)recording year — return it as
+  `year` only when it is a 4-digit year and plausible for that work.
+- Embedded tags CAN be wrong: a re-recording or a mislabeled rip may carry
+  the wrong artist/album (e.g. a Hitchhiker's rip tagged with Stephen Fry
+  or Martin Freeman as composer when the user wants the Douglas-Adams-narrated
+  edition). Sanity-check against the author's known works — if the embedded
+  artist/album/composer contradicts a famous title, trust the title.
+- Return `narrator` and `year` ONLY when reasonably confident; leave null
+  otherwise (downstream code falls back to the existing metadata value).
 
 QUALITY RULES:
 - Bitrate capping is CORRECT: never upscale (24kbps source → 24kbps output is right)
@@ -60,10 +97,20 @@ def _format_items(items: list[dict]) -> str:
     """Format items for prompt."""
     lines = []
     for item in items:
-        lines.append(f"[{item['index']}] {item['folder']}")
-        lines.append(
-            f"    Files: {item['file_count']} ({', '.join(item['files'][:3])}{'...' if len(item['files']) > 3 else ''})"
-        )
+        parent = item.get("parent_folder")
+        head = f"[{item['index']}] {item['folder']}"
+        if parent:
+            head += f"  (parent dir: {parent})"
+        lines.append(head)
+        files_preview = ", ".join(item["files"][:3]) + ("..." if len(item["files"]) > 3 else "")
+        files_line = f"    Files: {item['file_count']} ({files_preview})"
+        if item.get("total_hours") is not None:
+            files_line += f", ~{item['total_hours']}h total"
+        lines.append(files_line)
+        tags = item.get("embedded_tags") or {}
+        present = {k: v for k, v in tags.items() if v}
+        if present:
+            lines.append("    Embedded tags: " + "; ".join(f"{k}={v}" for k, v in present.items()))
         lines.append(f'    Inferred: "{item["inferred"]["title"]}" by {item["inferred"]["author"]}')
         if item["inferred"]["series"]:
             lines.append(f"    Series: {item['inferred']['series']} #{item['inferred']['series_number']}")
@@ -139,14 +186,34 @@ class BatchAIVerifier:
         if not audiobooks:
             return {}
 
-        # Build items list - cachekit will JSON-serialize for cache key
+        # Local extractor: reuses mutagen tag-reading from FilesystemMetadataExtractor
+        # so the prompt carries the richest available signal (artist/album/composer/date/...).
+        # Local import to avoid a circular module-load dependency.
+        from audiobook_optimizer.adapters.filesystem import FilesystemMetadataExtractor
+
+        extractor = FilesystemMetadataExtractor()
+
+        # Build items list - cachekit will JSON-serialize for cache key. Changing
+        # the dict shape (parent_folder, total_hours, embedded_tags) naturally
+        # invalidates stale cache entries from the pre-enrichment build.
         items = []
         for source, metadata, quality in audiobooks:
+            tags = extractor.read_embedded_tags(source)
+            # Prefer the AudiobookSource.total_duration_ms when populated; fall back
+            # to summing individual files. Both are in milliseconds.
+            total_ms = source.total_duration_ms or sum(f.duration_ms for f in source.audio_files if f.duration_ms)
+            total_hours = round(total_ms / 3_600_000, 1) if total_ms else None
+            # Truncate long tag values (comment can be a multi-paragraph description)
+            # to keep prompt size + cache key bounded.
+            safe_tags = {k: (v[:300] if isinstance(v, str) else v) for k, v in tags.items()}
             items.append(
                 {
                     "folder": source.source_path.name,
+                    "parent_folder": source.source_path.parent.name,
                     "files": [f.path.name for f in source.audio_files[:5]],
                     "file_count": len(source.audio_files),
+                    "total_hours": total_hours,
+                    "embedded_tags": safe_tags,
                     "inferred": {
                         "title": metadata.title,
                         "author": metadata.author,
@@ -168,14 +235,18 @@ def apply_verification(
     metadata: AudiobookMetadata,
     verification: AudiobookVerification,
 ) -> AudiobookMetadata:
-    """Apply AI verification to metadata, returning updated copy."""
+    """Apply AI verification to metadata, returning updated copy.
+
+    AI-returned `narrator` / `year` win when present, otherwise fall back to
+    the inferred values — never overwrite known data with null.
+    """
     return AudiobookMetadata(
         title=verification.title,
         author=verification.author,
         series=verification.series,
         series_number=verification.series_number,
-        narrator=metadata.narrator,
-        year=metadata.year,
+        narrator=verification.narrator or metadata.narrator,
+        year=verification.year or metadata.year,
         description=metadata.description,
         genre=metadata.genre,
         cover_path=metadata.cover_path,
