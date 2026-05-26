@@ -64,6 +64,28 @@ class TestAudiobookVerificationModel:
         assert v.year is None
 
 
+class TestBatchVerificationResultDefaults:
+    """audiobooks defaults to an empty list so the LLM can return summary-only.
+
+    Pydantic raised "Field required" when the LLM judged that no corrections
+    were needed and returned just `{"summary": "..."}` — the AI verification
+    would then fall through to filename-based metadata. The fix is to give
+    `audiobooks` a default empty list so an omitted/empty value is valid.
+    """
+
+    def test_audiobooks_defaults_to_empty_list(self):
+        # Schema must accept a summary-only response — this is what the LLM
+        # actually returned in the wild when nothing needed correcting.
+        r = BatchVerificationResult(summary="1 audiobook verified, no corrections needed")
+        assert r.audiobooks == []
+        assert r.summary == "1 audiobook verified, no corrections needed"
+
+    def test_audiobooks_can_still_be_populated(self):
+        v = AudiobookVerification(index=0, title="t", author="a")
+        r = BatchVerificationResult(audiobooks=[v], summary="1 verified")
+        assert r.audiobooks == [v]
+
+
 class TestApplyVerification:
     """apply_verification: AI value wins when present, else fall back to existing metadata."""
 

@@ -43,7 +43,11 @@ class AudiobookVerification(BaseModel):
 class BatchVerificationResult(BaseModel):
     """Result of batch verification."""
 
-    audiobooks: list[AudiobookVerification] = Field(description="Verified audiobooks")
+    # default_factory=list lets the LLM omit `audiobooks` when it judges that
+    # no corrections are needed — without this, pydantic raises "Field required"
+    # on perfectly valid "summary-only" responses and the entire AI verification
+    # falls through to filename-based metadata. See lab task #19.
+    audiobooks: list[AudiobookVerification] = Field(default_factory=list, description="Verified audiobooks")
     summary: str = Field(description="Brief summary of verification")
 
 
