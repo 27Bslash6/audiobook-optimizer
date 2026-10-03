@@ -672,9 +672,9 @@ class TestParallelProcessing:
         _probe_file_cached.cache_clear()
         converter = FFmpegConverter()
 
-        def probe_file(path: Path) -> dict:
+        def probe_file(path: Path) -> tuple[Path, dict]:
             """Probe a file in a thread."""
-            return converter.probe_file(path)
+            return path, converter.probe_file(path)
 
         # Probe all files multiple times concurrently
         all_paths = meditations_few_chapters * 3  # 9 probes total, 3 unique files
@@ -685,12 +685,17 @@ class TestParallelProcessing:
             for future in as_completed(futures):
                 results.append(future.result())
 
-        # All probes should succeed
+        # All probes should succeed, and every probe of a file returns the same result
         assert len(results) == 9
+        for path in meditations_few_chapters:
+            probes = [probe for p, probe in results if p == path]
+            assert len(probes) == 3
+            assert all(probe == probes[0] for probe in probes)
 
-        # Cache should show hits (each file probed 3x, so 6 hits expected)
+        # Every call is counted. Hit count is not asserted: there is no single-flight, so
+        # concurrent first calls on a cold key all miss, and how many race is timing-dependent.
         info = _probe_file_cached.cache_info()
-        assert info.hits >= 6, f"Expected at least 6 cache hits, got {info.hits}"
+        assert info.hits + info.misses == 9, f"Expected 9 cache lookups, got {info}"
 
     def test_processor_parallel_via_batch(self, meditations_few_chapters, temp_output_dir, tmp_path):
         """Test processor.process_batch simulates parallel-like behavior."""
